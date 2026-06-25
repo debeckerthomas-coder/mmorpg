@@ -1,6 +1,7 @@
 import type { AggregatedStats } from "../models/stats.js";
 import type { Player } from "../models/player.js";
 import type { Weapon } from "../models/weapon.js";
+import type { Point2D, PortalRank } from "../models/portals.js";
 
 /**
  * Protocole réseau du serveur autoritaire.
@@ -23,6 +24,7 @@ export const ClientMessageType = {
   Connect: "CONNECT",
   Move: "MOVE",
   GainXpDebug: "GAIN_XP_DEBUG",
+  AttackMob: "ATTACK_MOB",
 } as const;
 
 export type ClientMessageType =
@@ -47,7 +49,17 @@ export interface GainXpDebugMessage {
   amount: number;
 }
 
-export type ClientMessage = ConnectMessage | MoveMessage | GainXpDebugMessage;
+/** Le joueur attaque un monstre (validé en portée par le serveur). */
+export interface AttackMobMessage {
+  type: typeof ClientMessageType.AttackMob;
+  mobId: string;
+}
+
+export type ClientMessage =
+  | ConnectMessage
+  | MoveMessage
+  | GainXpDebugMessage
+  | AttackMobMessage;
 
 // ---------------------------------------------------------------------------
 // États / réponses : Serveur -> Client
@@ -87,10 +99,32 @@ export interface PlayerStateMessage {
   weapons: EquippedWeapons;
 }
 
-/** Position des joueurs présents dans le monde (diffusion). */
+/** Vue publique d'un portail. */
+export interface PublicPortal {
+  id: string;
+  rank: PortalRank;
+  position: Point2D;
+  open: boolean;
+}
+
+/** Vue publique d'un monstre (sans la cible interne ni l'XP). */
+export interface PublicMonster {
+  id: string;
+  rank: PortalRank;
+  pvActuels: number;
+  pvMax: number;
+  position: Point2D;
+}
+
+/**
+ * Diffusion de l'état du monde : joueurs présents, portails ouverts et
+ * monstres actifs (Brique 6).
+ */
 export interface WorldUpdateMessage {
   type: typeof ServerMessageType.WorldUpdate;
   players: PublicPlayer[];
+  portals: PublicPortal[];
+  monsters: PublicMonster[];
 }
 
 /** Erreur applicative (intention invalide, JSON malformé, etc.). */
@@ -112,6 +146,8 @@ export const ErrorCode = {
   NotConnected: "NOT_CONNECTED",
   InvalidMove: "INVALID_MOVE",
   NoWeaponEquipped: "NO_WEAPON_EQUIPPED",
+  MobNotFound: "MOB_NOT_FOUND",
+  OutOfRange: "OUT_OF_RANGE",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -190,6 +226,19 @@ export const parseClientMessage = (raw: string): ParseResult => {
           type: ClientMessageType.GainXpDebug,
           amount: obj["amount"],
         },
+      };
+    }
+    case ClientMessageType.AttackMob: {
+      if (typeof obj["mobId"] !== "string" || obj["mobId"] === "") {
+        return {
+          ok: false,
+          code: ErrorCode.InvalidPayload,
+          reason: "ATTACK_MOB requiert un 'mobId' non vide",
+        };
+      }
+      return {
+        ok: true,
+        message: { type: ClientMessageType.AttackMob, mobId: obj["mobId"] },
       };
     }
     default:

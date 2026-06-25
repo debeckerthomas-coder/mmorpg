@@ -24,8 +24,9 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | **3. Couche réseau (WebSocket)** | ✅ Fait | Protocole d'intentions/états, hub autoritaire, serveur `ws`, parsing sécurisé, tests |
 | **4. Boucle de jeu (game loop)** | ✅ Fait | Tick serveur fixe (20/s), régénération PV passive, entités mobiles (monstres), start/stop, tests |
 | **5. Interface graphique (navigateur)** | ✅ Fait | Client Vite/TS : login, HUD (PV, équipement, affixes/sorts), zone canvas, déplacement (clic/clavier), debug XP |
+| **6. Bestiaire & Portails (Solo Leveling)** | ✅ Fait | Portails (rangs C/B/A/S), monstres, IA de poursuite, combat joueur↔mob, gain d'XP au kill, rendu client, tests |
 
-Les 5 briques sont en place : modèles de données, persistance, évolution
+Les 5 briques de base sont en place : modèles de données, persistance, évolution
 d'arme, couche réseau, boucle de simulation **et** client navigateur. Le
 prototype jouable de bout en bout est fonctionnel.
 
@@ -44,6 +45,8 @@ prototype jouable de bout en bout est fonctionnel.
     │   ├── weapon.ts        # Weapon, Affix, GeneratedSpell, RawStats, enums
     │   ├── stats.ts         # Règle d'agrégation des stats d'équipement
     │   ├── evolution.ts     # Weapon Evolution Engine (gainXp, loot, level up)
+    │   ├── portals.ts       # Portal, PortalRank (Brique 6)
+    │   ├── monsters.ts      # Monster (Brique 6)
     │   ├── factory.ts       # Création d'entités avec valeurs par défaut
     │   ├── stats.test.ts    # Tests de la règle d'agrégation
     │   ├── evolution.test.ts# Tests du moteur d'évolution
@@ -60,8 +63,11 @@ prototype jouable de bout en bout est fonctionnel.
     │   ├── *.test.ts        # Tests protocole / hub / intégration WebSocket
     │   └── index.ts         # Ré-exports publics
     ├── server/              # Serveur autoritaire (bootstrap + simulation)
-    │   ├── gameloop.ts      # Boucle de tick (régénération, monstres)
+    │   ├── gameloop.ts      # Boucle de tick (IA mobs, dégâts, régénération)
+    │   ├── combat.ts        # Logique pure combat & IA (Brique 6)
+    │   ├── mobs.ts          # MobManager : portails, spawn, IA (Brique 6)
     │   ├── gameloop.test.ts # Tests de la boucle de jeu
+    │   ├── combat.test.ts   # Tests IA de suivi + calcul des dégâts
     │   └── index.ts         # Démarrage persistance + WebSocket + game loop
     └── client/              # Frontend navigateur (Brique 5, build Vite)
         ├── index.html       # Écran d'accueil + structure du HUD/jeu
@@ -271,17 +277,19 @@ WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage
 | `CONNECT` | `{ pseudo: string }` | Charge le `Player` par pseudo ou le **crée** (avec une arme de départ équipée), lie la session, renvoie `PLAYER_STATE` + diffuse `WORLD_UPDATE` | `pseudo` non vide |
 | `MOVE` | `{ x: number, y: number }` | Valide puis met à jour la position autoritaire, persiste, renvoie `PLAYER_STATE` + `WORLD_UPDATE` | distance ≤ `MAX_MOVE_DISTANCE` (50) ; sinon rejet anti-téléportation |
 | `GAIN_XP_DEBUG` | `{ amount: number }` | **(debug)** Applique `gainXp` à l'arme du Slot_Principal, persiste, renvoie `PLAYER_STATE` | session connectée + arme équipée ; `amount ≥ 0` |
+| `ATTACK_MOB` | `{ mobId: string }` | Attaque un monstre : valide la portée selon l'arme, inflige les dégâts, accorde l'XP si kill, renvoie `PLAYER_STATE` + `WORLD_UPDATE` (Brique 6) | session connectée + arme + mob existant + distance ≤ portée |
 
 ### 8.3 États / réponses — Serveur → Client (`ServerMessage`)
 
 | `type` | Charge utile | Quand |
 | --- | --- | --- |
-| `PLAYER_STATE` | `{ player: Player, stats: AggregatedStats }` | Après CONNECT / MOVE / GAIN_XP_DEBUG (état + stats agrégées du joueur) |
-| `WORLD_UPDATE` | `{ players: PublicPlayer[] }` | Diffusion à tous : positions publiques des joueurs présents (CONNECT, MOVE, déconnexion) |
+| `PLAYER_STATE` | `{ player, stats, weapons }` | Après CONNECT / MOVE / GAIN_XP_DEBUG / ATTACK_MOB (état + stats agrégées + armes équipées) |
+| `WORLD_UPDATE` | `{ players: PublicPlayer[], portals: PublicPortal[], monsters: PublicMonster[] }` | Diffusion à tous : joueurs, portails et monstres (CONNECT, MOVE, ATTACK_MOB, chaque tick d'IA, déconnexion) |
 | `ERROR` | `{ code: ErrorCode, message: string }` | Intention invalide / JSON malformé / état incohérent |
 
 **Codes d'erreur** (`ErrorCode`) : `MALFORMED_JSON`, `UNKNOWN_TYPE`,
-`INVALID_PAYLOAD`, `NOT_CONNECTED`, `INVALID_MOVE`, `NO_WEAPON_EQUIPPED`.
+`INVALID_PAYLOAD`, `NOT_CONNECTED`, `INVALID_MOVE`, `NO_WEAPON_EQUIPPED`,
+`MOB_NOT_FOUND`, `OUT_OF_RANGE`.
 
 ### 8.4 Tests
 
@@ -338,15 +346,80 @@ le serveur WebSocket, en lui passant le `GameHub` comme source de participants.
 
 Couvert par [`gameloop.test.ts`](src/server/gameloop.test.ts) : tick rate,
 régénération après plusieurs ticks, saturation à `pvMax`, aucun gain au max,
-écoulement réel du temps via `start`/`stop`, idempotence, cycle de vie des
-monstres.
+écoulement réel du temps via `start`/`stop`, idempotence, exposition du
+bestiaire via la boucle.
 
-## 10. Client navigateur (Brique 5)
+## 10. Bestiaire & Portails — Solo Leveling System (Brique 6)
+
+Système de portails, de monstres et de combat. Le `MobManager`
+([`mobs.ts`](src/server/mobs.ts)) détient l'état volatile du monde (portails +
+monstres) et est **partagé** entre le `GameHub` (attaques, diffusion) et la
+`GameLoop` (IA). La logique fine est isolée dans des fonctions pures
+([`combat.ts`](src/server/combat.ts)).
+
+### 10.1 Modèles
+
+`Portal` ([`portals.ts`](src/models/portals.ts)) : `{ id, rank, position, open }`
+avec `PortalRank ∈ { C, B, A, S }`.
+
+`Monster` ([`monsters.ts`](src/models/monsters.ts)) :
+`{ id, portalId, rank, pvMax, pvActuels, position{x,y}, force, xpDonnee, cible }`.
+
+### 10.2 Apparition des portails
+
+Probabilités de rang (table `PORTAL_RANK_TABLE`) :
+
+| Rang | Probabilité | PV mob | Force mob | XP donnée |
+| --- | --- | --- | --- | --- |
+| C | 60 % | 30 | 3 | 25 |
+| B | 25 % | 60 | 6 | 60 |
+| A | 12 % | 120 | 12 | 150 |
+| S | 3 % | 250 | 25 | 400 |
+
+Chaque portail fait apparaître **3 monstres** (`MONSTERS_PER_PORTAL`) répartis
+autour de lui. En production, le bootstrap ouvre un portail au démarrage puis
+en ajoute régulièrement (max 5).
+
+### 10.3 IA (à chaque tick de 50 ms)
+
+Dans `MobManager.tick(deltaMs, players)` :
+- chaque monstre cherche le **joueur le plus proche** dans un rayon de
+  `DETECTION_RADIUS` = 5 cases (`findNearestPlayer`) et le mémorise (`cible`) ;
+- s'il est à `ATTACK_RANGE` = 1 case, il **attaque** (cooldown
+  `MONSTER_ATTACK_COOLDOWN_MS` = 1000 ms) et inflige sa `force` en PV ;
+- sinon il **se rapproche** de `MONSTER_SPEED` = 0.5 case (`stepToward`).
+
+Les dégâts subis sont appliqués par la `GameLoop` (réduction de `pvActuels`,
+puis régénération des survivants).
+
+### 10.4 Combat joueur → monstre (`ATTACK_MOB`)
+
+Validé côté serveur dans le `GameHub` :
+- **Portée** selon l'arme principale (`weaponRange`) : Épée/Bouclier = 1,
+  Arc/Bâton = 5 cases. Hors de portée → `OUT_OF_RANGE`.
+- **Dégâts** (`computePlayerDamage`) = `ATTACK_BASE_DAMAGE` (5) + stat agrégée :
+  **Force** pour les armes de mêlée, **Agilité** pour les armes à distance.
+- Si le monstre meurt, l'arme principale gagne `mob.xpDonnee` via `gainXp`
+  (Brique 2) — elle peut monter de niveau en plein combat.
+
+### 10.5 Rendu client
+
+Le canvas dessine les **portails** (cercles colorés : C vert, B bleu, A violet,
+S rouge) et les **monstres** (carrés rouges + barre de PV). Cliquer sur un
+monstre proche envoie `ATTACK_MOB` (le serveur valide la portée).
+
+### 10.6 Tests
+
+[`combat.test.ts`](src/server/combat.test.ts) : portée d'arme, calcul des
+dégâts (Force/Agilité), `stepToward`, `findNearestPlayer`, seuils de rang,
+apparition portail+3 mobs, **IA de poursuite**, attaque + cooldown, mort du mob.
+
+## 11. Client navigateur (Brique 5)
 
 Frontend **Vite + TypeScript** dans [`src/client/`](src/client/). Aucun
 framework : DOM + Canvas 2D, pour rester lisible et léger.
 
-### 10.1 Connexion & contrat partagé
+### 11.1 Connexion & contrat partagé
 
 - Le client ouvre une WebSocket vers `ws://<host>:8080` et envoie l'intention
   `CONNECT { pseudo }` dès l'ouverture.
@@ -358,7 +431,7 @@ framework : DOM + Canvas 2D, pour rester lisible et léger.
 - Le `PLAYER_STATE` a été enrichi d'un champ `weapons` (armes équipées
   résolues) afin que le HUD affiche nom/niveau/XP/affixes/sorts par slot.
 
-### 10.2 Interface
+### 11.2 Interface
 
 - **Écran d'accueil** : champ pseudo + bouton « Rejoindre le Multivers ».
 - **HUD** : pseudo, statut **PK/Pacifiste**, barre de **PV actuels / PV max**,
@@ -367,18 +440,21 @@ framework : DOM + Canvas 2D, pour rester lisible et léger.
   (inactifs) — visualisation directe de la règle d'agrégation de la Brique 1.
 - **Stats agrégées** (Force, Agilité, Bonus PV, PV max).
 
-### 10.3 Zone de jeu & commandes
+### 11.3 Zone de jeu & commandes
 
 - **Canvas 2D** : grille du biome, joueur (carré liseré) à sa position `(x, y)`,
-  autres joueurs en gris (via `WORLD_UPDATE`).
-- **Déplacement** : clic sur la carte **ou** flèches / ZQSD / WASD → envoie
+  autres joueurs en gris, **portails** (cercles colorés par rang) et **monstres**
+  (carrés rouges + barre de PV) via `WORLD_UPDATE`.
+- **Combat** : cliquer sur un monstre proche envoie `ATTACK_MOB` (le serveur
+  valide la portée selon l'arme principale).
+- **Déplacement** : clic sur la carte (hors monstre) **ou** flèches / ZQSD / WASD → envoie
   l'intention `MOVE`. Le client borne le déplacement à `MAX_MOVE_DISTANCE`
   pour rester accepté ; un `MOVE` aberrant rejeté par le serveur renvoie l'état
   officiel (snap-back) — l'autorité reste serveur.
 - **Bouton debug « Gagner de l'XP »** : envoie `GAIN_XP_DEBUG` et l'on voit
   l'arme évoluer en direct (niveau, XP, nouveaux affixes/sorts).
 
-### 10.4 Lancer le client
+### 11.4 Lancer le client
 
 ```bash
 npm start          # serveur autoritaire (WebSocket :8080 + game loop)
@@ -389,7 +465,7 @@ Build de production : `npm run build:client` (sortie dans `dist/client/`).
 Validé bout-en-bout via un test navigateur headless (Chromium) : connexion →
 HUD rempli → `GAIN_XP_DEBUG` → montée de l'arme au niveau 2 rendue à l'écran.
 
-## 11. Conventions techniques
+## 12. Conventions techniques
 
 - **TypeScript strict** (`strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`) — voir [`tsconfig.json`](tsconfig.json).
@@ -400,7 +476,7 @@ HUD rempli → `GAIN_XP_DEBUG` → montée de l'arme au niveau 2 rendue à l'éc
 - Les **fabriques** (`createPlayer`, `createWeapon`) centralisent les valeurs
   par défaut pour garantir des entités cohérentes.
 
-## 12. Scripts npm
+## 13. Scripts npm
 
 | Script | Action |
 | --- | --- |

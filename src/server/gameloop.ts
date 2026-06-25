@@ -1,17 +1,19 @@
 import type { PlayerId } from "../models/ids.js";
-import type { Player, Position } from "../models/player.js";
+import type { Player } from "../models/player.js";
 import { computeAggregatedStats } from "../models/stats.js";
 import type { Weapon } from "../models/weapon.js";
 import type { PersistenceLayer } from "../persistence/repository.js";
+import type { PlayerPosition } from "./combat.js";
+import { MobManager } from "./mobs.js";
 
 /**
- * Game Loop & Server Ticks (Brique 4).
+ * Game Loop & Server Ticks (Briques 4 & 6).
  *
  * Moteur de simulation temps réel du serveur autoritaire. Une boucle à pas de
  * temps FIXE met à jour l'état du monde à intervalles réguliers :
- *   - régénération passive des PV des joueurs connectés ;
- *   - mise à jour des entités mobiles (monstres) — socle pour les briques
- *     suivantes (IA, combat).
+ *   - IA des monstres (déplacement vers les joueurs, attaques) via MobManager ;
+ *   - application des dégâts subis par les joueurs ;
+ *   - régénération passive des PV des joueurs connectés.
  *
  * La boucle est démarrable/arrêtable proprement (`start`/`stop`) et expose
  * `tick()` publiquement pour des tests déterministes (sans dépendre du timer).
@@ -25,21 +27,6 @@ export const TICK_INTERVAL_MS = 1000 / TICK_RATE;
 
 /** Fraction des PV max régénérée par seconde par défaut (5 %/s). */
 export const DEFAULT_REGEN_PER_SECOND = 0.05;
-
-/**
- * Entité mobile générique présente dans le monde (socle pour les monstres).
- * Volontairement minimale pour ce jalon : PV + position dans une zone.
- */
-export interface MobileEntity {
-  id: string;
-  name: string;
-  pvActuels: number;
-  pvMax: number;
-  position: Position;
-}
-
-/** Un monstre est une entité mobile (alias sémantique pour l'instant). */
-export type Monster = MobileEntity;
 
 /**
  * Fournisseur des participants du monde : qui est connecté et doit être simulé.
@@ -61,6 +48,8 @@ export interface TickInfo {
 export interface GameLoopOptions {
   persistence: PersistenceLayer;
   participants: WorldParticipants;
+  /** Gestionnaire du bestiaire (partagé avec le GameHub). */
+  mobManager?: MobManager;
   /** Pas de temps entre deux ticks (défaut : 50 ms). */
   tickIntervalMs?: number;
   /** Régénération PV en fraction des PV max par seconde (défaut : 5 %/s). */
@@ -72,6 +61,7 @@ export interface GameLoopOptions {
 export class GameLoop {
   private readonly persistence: PersistenceLayer;
   private readonly participants: WorldParticipants;
+  private readonly mobManager: MobManager;
   private readonly tickIntervalMs: number;
   private readonly regenPerSecond: number;
   private readonly onTick: ((info: TickInfo) => void) | undefined;
@@ -80,11 +70,11 @@ export class GameLoop {
   private _tickCount = 0;
   /** Garde-fou anti-réentrance si un tick async dépasse l'intervalle. */
   private ticking = false;
-  private readonly monsters = new Map<string, Monster>();
 
   constructor(options: GameLoopOptions) {
     this.persistence = options.persistence;
     this.participants = options.participants;
+    this.mobManager = options.mobManager ?? new MobManager();
     this.tickIntervalMs = options.tickIntervalMs ?? TICK_INTERVAL_MS;
     this.regenPerSecond = options.regenPerSecond ?? DEFAULT_REGEN_PER_SECOND;
     this.onTick = options.onTick;
@@ -96,6 +86,11 @@ export class GameLoop {
 
   get tickCount(): number {
     return this._tickCount;
+  }
+
+  /** Gestionnaire du bestiaire (portails + monstres). */
+  get mobs(): MobManager {
+    return this.mobManager;
   }
 
   /** Démarre la boucle (idempotent). */
@@ -117,22 +112,6 @@ export class GameLoop {
   }
 
   // -------------------------------------------------------------------------
-  // Monstres / entités mobiles
-  // -------------------------------------------------------------------------
-
-  spawnMonster(monster: Monster): void {
-    this.monsters.set(monster.id, monster);
-  }
-
-  removeMonster(id: string): boolean {
-    return this.monsters.delete(id);
-  }
-
-  getMonsters(): Monster[] {
-    return [...this.monsters.values()];
-  }
-
-  // -------------------------------------------------------------------------
   // Simulation
   // -------------------------------------------------------------------------
 
@@ -149,15 +128,10 @@ export class GameLoop {
     }
     this.ticking = true;
     try {
-      const playersProcessed = await this.regenPlayers(deltaMs);
-      this.updateMonsters(deltaMs);
+      const playersProcessed = await this.simulatePlayers(deltaMs);
 
       this._tickCount += 1;
-      const info: TickInfo = {
-        tick: this._tickCount,
-        deltaMs,
-        playersProcessed,
-      };
+      const info: TickInfo = { tick: this._tickCount, deltaMs, playersProcessed };
       this.onTick?.(info);
       return info;
     } finally {
@@ -165,33 +139,52 @@ export class GameLoop {
     }
   }
 
-  /** Régénération passive des PV des joueurs connectés. */
-  private async regenPlayers(deltaMs: number): Promise<number> {
-    let processed = 0;
+  /**
+   * Traite les joueurs connectés sur un tick : IA/attaques des monstres
+   * (dégâts subis) puis régénération passive. Persiste les joueurs modifiés.
+   */
+  private async simulatePlayers(deltaMs: number): Promise<number> {
+    // 1) Charger les entités des joueurs connectés.
+    const entities = new Map<PlayerId, Player>();
+    const positions: PlayerPosition[] = [];
     for (const playerId of this.participants.connectedPlayerIds()) {
       const player = await this.persistence.players.get(playerId);
       if (!player) continue;
-      processed += 1;
+      entities.set(playerId, player);
+      positions.push({ id: playerId, position: player.position });
+    }
 
+    const dirty = new Set<PlayerId>();
+
+    // 2) IA des monstres : déplacement + attaques → dégâts subis.
+    for (const event of this.mobManager.tick(deltaMs, positions)) {
+      const player = entities.get(event.playerId);
+      if (!player) continue;
+      player.pvActuels = Math.max(0, player.pvActuels - event.amount);
+      dirty.add(event.playerId);
+    }
+
+    // 3) Régénération passive (uniquement les joueurs vivants sous leur max).
+    for (const [playerId, player] of entities) {
+      if (player.pvActuels <= 0) continue;
       const stats = await this.aggregate(player);
-      if (player.pvActuels >= stats.pvMax) continue; // déjà au max
+      if (player.pvActuels >= stats.pvMax) continue;
 
       const regen = stats.pvMax * this.regenPerSecond * (deltaMs / 1000);
       const next = Math.min(stats.pvMax, player.pvActuels + regen);
       if (next !== player.pvActuels) {
         player.pvActuels = next;
-        await this.persistence.players.save(player);
+        dirty.add(playerId);
       }
     }
-    return processed;
-  }
 
-  /**
-   * Mise à jour des entités mobiles. Pour ce jalon, les monstres sont inertes
-   * (présence simulée) ; l'IA et le combat viendront dans une brique ultérieure.
-   */
-  private updateMonsters(_deltaMs: number): void {
-    // Point d'extension : déplacement, agro, attaques...
+    // 4) Persister les modifications.
+    for (const playerId of dirty) {
+      const player = entities.get(playerId);
+      if (player) await this.persistence.players.save(player);
+    }
+
+    return entities.size;
   }
 
   /** Calcule les stats agrégées d'un joueur en résolvant ses armes équipées. */

@@ -3,6 +3,7 @@ import type { PersistenceLayer } from "../persistence/index.js";
 import { computeAggregatedStats, type Weapon } from "../models/index.js";
 import { startNetworkServer } from "../network/index.js";
 import { GameLoop, TICK_INTERVAL_MS, TICK_RATE } from "./gameloop.js";
+import { MobManager } from "./mobs.js";
 
 /**
  * Contexte du serveur autoritaire.
@@ -61,17 +62,36 @@ if (isMain) {
     console.log(
       `[server] Persistance initialisée — ${players.length} joueur(s) chargé(s).`,
     );
-    const net = await startNetworkServer({ port, persistence: ctx.persistence });
+    // Bestiaire partagé entre le hub (attaques/diffusion) et la game loop (IA).
+    const mobs = new MobManager();
+    const net = await startNetworkServer({
+      port,
+      persistence: ctx.persistence,
+      mobManager: mobs,
+    });
     console.log(`[server] Serveur WebSocket autoritaire en écoute sur :${port}`);
 
-    // Démarre la boucle de jeu (régénération PV, simulation du monde).
+    // Boucle de jeu : IA des monstres, dégâts, régénération.
+    // Après chaque tick, on diffuse l'état du monde aux clients connectés.
     const loop = new GameLoop({
       persistence: ctx.persistence,
       participants: net.hub,
+      mobManager: mobs,
+      onTick: () => {
+        void net.hub.broadcastWorld();
+      },
     });
     loop.start();
     console.log(
       `[server] Game loop démarrée (${TICK_RATE} ticks/s, ${TICK_INTERVAL_MS} ms/tick).`,
     );
+
+    // Ouvre un premier portail puis en fait apparaître régulièrement (max 5).
+    mobs.spawnPortal();
+    const MAX_PORTALS = 5;
+    setInterval(() => {
+      if (mobs.getPortals().length < MAX_PORTALS) mobs.spawnPortal();
+    }, 20000).unref?.();
+    console.log("[server] Bestiaire actif (portails & monstres).");
   })();
 }

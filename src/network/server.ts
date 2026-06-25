@@ -1,5 +1,6 @@
 import { WebSocketServer, type WebSocket } from "ws";
 import type { PersistenceLayer } from "../persistence/repository.js";
+import type { MobManager } from "../server/mobs.js";
 import { GameHub } from "./gameHub.js";
 import type { ServerMessage } from "./protocol.js";
 
@@ -8,6 +9,8 @@ export interface NetworkServerOptions {
   persistence: PersistenceLayer;
   /** Hôte d'écoute (par défaut toutes les interfaces). */
   host?: string;
+  /** Bestiaire partagé avec la GameLoop (créé par défaut sinon). */
+  mobManager?: MobManager;
 }
 
 export interface NetworkServer {
@@ -28,8 +31,8 @@ export interface NetworkServer {
 export const createNetworkServer = (
   options: NetworkServerOptions,
 ): NetworkServer => {
-  const { port, persistence, host } = options;
-  const hub = new GameHub(persistence);
+  const { port, persistence, host, mobManager } = options;
+  const hub = new GameHub(persistence, mobManager);
   const wss = new WebSocketServer({ port, host });
 
   wss.on("connection", (socket: WebSocket) => {

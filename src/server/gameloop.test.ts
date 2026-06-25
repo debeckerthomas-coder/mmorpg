@@ -123,24 +123,17 @@ test("start() est idempotent", () => {
   assert.equal(loop.isRunning, false);
 });
 
-test("les entités mobiles (monstres) peuvent être ajoutées et retirées", async () => {
+test("la boucle expose le bestiaire et un portail y fait apparaître des mobs", async () => {
   const persistence = createMemoryPersistence();
   const loop = new GameLoop({ persistence, participants: participantsOf() });
 
-  loop.spawnMonster({
-    id: "gobelin-1",
-    name: "Gobelin",
-    pvActuels: 30,
-    pvMax: 30,
-    position: { x: 5, y: 5, zone: "spawn" },
-  });
+  // rng déterministe : rang C, position (250, 250).
+  loop.mobs.spawnPortal(() => 0.5);
 
-  assert.equal(loop.getMonsters().length, 1);
+  assert.equal(loop.mobs.getPortals().length, 1);
+  assert.equal(loop.mobs.getMonsters().length, 3);
 
-  // Un tick ne fait pas disparaître le monstre (présence simulée).
+  // Un tick sans joueur connecté ne fait pas disparaître les monstres.
   await loop.tick();
-  assert.equal(loop.getMonsters().length, 1);
-
-  assert.equal(loop.removeMonster("gobelin-1"), true);
-  assert.equal(loop.getMonsters().length, 0);
+  assert.equal(loop.mobs.getMonsters().length, 3);
 });

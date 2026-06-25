@@ -7,3 +7,5 @@ export * from "./player.js";
 export * from "./stats.js";
 export * from "./factory.js";
 export * from "./evolution.js";
+export * from "./portals.js";
+export * from "./monsters.js";

@@ -5,6 +5,9 @@ import {
   type ClientMessage,
   type PlayerStateMessage,
   type PlayerView,
+  type PortalRank,
+  type PublicMonster,
+  type PublicPortal,
   type ServerMessage,
   type WeaponView,
   type WorldUpdateMessage,
@@ -40,6 +43,16 @@ let me: PlayerView | null = null;
 let stats: AggregatedStatsView | null = null;
 let weapons: PlayerStateMessage["weapons"] | null = null;
 let others: WorldUpdateMessage["players"] = [];
+let portals: PublicPortal[] = [];
+let monsters: PublicMonster[] = [];
+
+/** Couleur de rendu d'un portail selon son rang. */
+const RANK_COLOR: Record<PortalRank, string> = {
+  C: "#2ecc71", // vert
+  B: "#3498db", // bleu
+  A: "#9b59ff", // violet
+  S: "#ff5470", // rouge
+};
 
 // ---------------------------------------------------------------------------
 // Connexion
@@ -98,6 +111,8 @@ const handleServerMessage = (msg: ServerMessage): void => {
       break;
     case ServerMessageType.WorldUpdate:
       others = msg.players;
+      portals = msg.portals;
+      monsters = msg.monsters;
       renderWorld();
       break;
     case ServerMessageType.Error:
@@ -222,6 +237,40 @@ const renderWorld = (): void => {
     ctx.stroke();
   }
 
+  // Portails (cercles colorés selon le rang)
+  for (const portal of portals) {
+    const cx = worldToCanvas(portal.position.x);
+    const cy = worldToCanvas(portal.position.y);
+    const color = RANK_COLOR[portal.rank];
+    ctx.beginPath();
+    ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = color + "33";
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.font = "bold 11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(`Rang ${portal.rank}`, cx, cy - 16);
+  }
+
+  // Monstres (carrés rouges avec barre de PV)
+  for (const mob of monsters) {
+    const cx = worldToCanvas(mob.position.x);
+    const cy = worldToCanvas(mob.position.y);
+    const size = 12;
+    ctx.fillStyle = "#ff5470";
+    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+    // Barre de PV
+    const w = 16;
+    const pct = mob.pvMax > 0 ? Math.max(0, mob.pvActuels / mob.pvMax) : 0;
+    ctx.fillStyle = "#3a1620";
+    ctx.fillRect(cx - w / 2, cy - size, w, 3);
+    ctx.fillStyle = "#ff8aa0";
+    ctx.fillRect(cx - w / 2, cy - size, w * pct, 3);
+  }
+
   // Autres joueurs
   for (const p of others) {
     if (me && p.id === me.id) continue;
@@ -285,10 +334,30 @@ const moveTowards = (targetX: number, targetY: number): void => {
   });
 };
 
+/** Rayon (en pixels) pour considérer qu'un clic vise un monstre. */
+const MOB_CLICK_RADIUS = 14;
+
 canvas.addEventListener("click", (e) => {
   const rect = canvas.getBoundingClientRect();
   const px = ((e.clientX - rect.left) / rect.width) * canvas.width;
   const py = ((e.clientY - rect.top) / rect.height) * canvas.height;
+
+  // Clic sur un monstre proche → intention d'attaque (portée validée serveur).
+  let nearest: PublicMonster | null = null;
+  let nearestDist = MOB_CLICK_RADIUS;
+  for (const mob of monsters) {
+    const d = Math.hypot(worldToCanvas(mob.position.x) - px, worldToCanvas(mob.position.y) - py);
+    if (d <= nearestDist) {
+      nearestDist = d;
+      nearest = mob;
+    }
+  }
+  if (nearest) {
+    send({ type: ClientMessageType.AttackMob, mobId: nearest.id });
+    return;
+  }
+
+  // Sinon : déplacement vers le point cliqué.
   moveTowards(px / scale, py / scale);
 });
 

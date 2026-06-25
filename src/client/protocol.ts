@@ -11,7 +11,11 @@ export const ClientMessageType = {
   Connect: "CONNECT",
   Move: "MOVE",
   GainXpDebug: "GAIN_XP_DEBUG",
+  AttackMob: "ATTACK_MOB",
 } as const;
+
+/** Rangs de portail (couleurs de rendu côté client). */
+export type PortalRank = "C" | "B" | "A" | "S";
 
 export const ServerMessageType = {
   PlayerState: "PLAYER_STATE",
@@ -76,7 +80,23 @@ export interface AggregatedStatsView {
 export type ClientMessage =
   | { type: typeof ClientMessageType.Connect; pseudo: string }
   | { type: typeof ClientMessageType.Move; x: number; y: number }
-  | { type: typeof ClientMessageType.GainXpDebug; amount: number };
+  | { type: typeof ClientMessageType.GainXpDebug; amount: number }
+  | { type: typeof ClientMessageType.AttackMob; mobId: string };
+
+export interface PublicPortal {
+  id: string;
+  rank: PortalRank;
+  position: { x: number; y: number };
+  open: boolean;
+}
+
+export interface PublicMonster {
+  id: string;
+  rank: PortalRank;
+  pvActuels: number;
+  pvMax: number;
+  position: { x: number; y: number };
+}
 
 // --- États Serveur -> Client ---
 
@@ -93,6 +113,8 @@ export interface PlayerStateMessage {
 export interface WorldUpdateMessage {
   type: typeof ServerMessageType.WorldUpdate;
   players: { id: string; pseudo: string; position: Position }[];
+  portals: PublicPortal[];
+  monsters: PublicMonster[];
 }
 
 export interface ErrorMessage {
