@@ -1,0 +1,34 @@
+{
+  "name": "micro-mmorpg",
+  "version": "0.1.0",
+  "description": "Micro-MMORPG persistant sur navigateur — serveur autoritaire (Node.js + TypeScript + WebSockets)",
+  "type": "module",
+  "main": "dist/server/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx ./src/**/*.test.ts"
+  },
+  "keywords": [
+    "mmorpg",
+    "websocket",
+    "game-server",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

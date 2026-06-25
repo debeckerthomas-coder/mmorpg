@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Données de persistance locales (sauvegardes runtime)
+data/*.json
+!data/.gitkeep
