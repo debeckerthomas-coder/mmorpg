@@ -6,3 +6,4 @@ export * from "./weapon.js";
 export * from "./player.js";
 export * from "./stats.js";
 export * from "./factory.js";
+export * from "./evolution.js";
