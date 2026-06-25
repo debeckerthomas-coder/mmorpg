@@ -1,7 +1,7 @@
 import { createPlayer, createWeapon } from "../models/factory.js";
 import type { PlayerId } from "../models/ids.js";
 import type { Player } from "../models/player.js";
-import { computeAggregatedStats, type AggregatedStats } from "../models/stats.js";
+import { computeAggregatedStats } from "../models/stats.js";
 import { gainXp } from "../models/evolution.js";
 import { WeaponType, type Weapon } from "../models/weapon.js";
 import type { PersistenceLayer } from "../persistence/repository.js";
@@ -230,27 +230,35 @@ export class GameHub {
     return player;
   }
 
-  /** Calcule les stats agrégées d'un joueur en résolvant ses armes équipées. */
-  private async aggregate(player: Player): Promise<AggregatedStats> {
-    const cache = new Map<string, Weapon>();
-    for (const slot of [
-      player.equipment.slotPrincipal,
-      player.equipment.slotSecondaire,
-    ]) {
-      if (slot && !cache.has(slot)) {
-        const weapon = await this.persistence.weapons.get(slot);
-        if (weapon) cache.set(slot, weapon);
-      }
-    }
-    return computeAggregatedStats(player, (id) => cache.get(id));
+  /** Résout les armes équipées dans les deux slots (null si vide/introuvable). */
+  private async resolveEquipped(player: Player): Promise<{
+    slotPrincipal: Weapon | null;
+    slotSecondaire: Weapon | null;
+  }> {
+    const load = async (id: Player["equipment"]["slotPrincipal"]) =>
+      id ? ((await this.persistence.weapons.get(id)) ?? null) : null;
+    return {
+      slotPrincipal: await load(player.equipment.slotPrincipal),
+      slotSecondaire: await load(player.equipment.slotSecondaire),
+    };
   }
 
   private async sendPlayerState(
     session: Session,
     player: Player,
   ): Promise<void> {
-    const stats = await this.aggregate(player);
-    session.send({ type: ServerMessageType.PlayerState, player, stats });
+    const weapons = await this.resolveEquipped(player);
+    const cache = new Map<string, Weapon>();
+    if (weapons.slotPrincipal) cache.set(weapons.slotPrincipal.id, weapons.slotPrincipal);
+    if (weapons.slotSecondaire) cache.set(weapons.slotSecondaire.id, weapons.slotSecondaire);
+
+    const stats = computeAggregatedStats(player, (id) => cache.get(id));
+    session.send({
+      type: ServerMessageType.PlayerState,
+      player,
+      stats,
+      weapons,
+    });
   }
 
   /** Diffuse à tous les clients connectés la position des joueurs présents. */

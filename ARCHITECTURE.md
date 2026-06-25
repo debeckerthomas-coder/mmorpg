@@ -23,11 +23,11 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | **2. Loot & évolution d'arme** | ✅ Fait | `gainXp`, level up, croissance de stats par Type, génération d'affixes/sorts pondérée par rareté, tests |
 | **3. Couche réseau (WebSocket)** | ✅ Fait | Protocole d'intentions/états, hub autoritaire, serveur `ws`, parsing sécurisé, tests |
 | **4. Boucle de jeu (game loop)** | ✅ Fait | Tick serveur fixe (20/s), régénération PV passive, entités mobiles (monstres), start/stop, tests |
-| 5. Interface graphique (navigateur) | ⏳ À venir | Rendu client, prédiction/réconciliation |
+| **5. Interface graphique (navigateur)** | ✅ Fait | Client Vite/TS : login, HUD (PV, équipement, affixes/sorts), zone canvas, déplacement (clic/clavier), debug XP |
 
-Les briques 1 à 4 couvrent les modèles de données, la persistance, le moteur
-d'évolution d'arme, la couche réseau et la boucle de simulation du serveur
-autoritaire. Aucune interface graphique n'est encore fournie.
+Les 5 briques sont en place : modèles de données, persistance, évolution
+d'arme, couche réseau, boucle de simulation **et** client navigateur. Le
+prototype jouable de bout en bout est fonctionnel.
 
 ## 3. Structure des dossiers
 
@@ -59,10 +59,16 @@ autoritaire. Aucune interface graphique n'est encore fournie.
     │   ├── server.ts        # Serveur WebSocket (ws) + cycle de vie
     │   ├── *.test.ts        # Tests protocole / hub / intégration WebSocket
     │   └── index.ts         # Ré-exports publics
-    └── server/              # Serveur autoritaire (bootstrap + simulation)
-        ├── gameloop.ts      # Boucle de tick (régénération, monstres)
-        ├── gameloop.test.ts # Tests de la boucle de jeu
-        └── index.ts         # Démarrage persistance + WebSocket + game loop
+    ├── server/              # Serveur autoritaire (bootstrap + simulation)
+    │   ├── gameloop.ts      # Boucle de tick (régénération, monstres)
+    │   ├── gameloop.test.ts # Tests de la boucle de jeu
+    │   └── index.ts         # Démarrage persistance + WebSocket + game loop
+    └── client/              # Frontend navigateur (Brique 5, build Vite)
+        ├── index.html       # Écran d'accueil + structure du HUD/jeu
+        ├── style.css        # Thème et mise en page
+        ├── protocol.ts      # Miroir client du contrat réseau (wire format)
+        ├── main.ts          # Connexion WS, HUD, rendu canvas, déplacements
+        └── tsconfig.json    # Config TS du client (lib DOM, bundler)
 ```
 
 ## 4. Modèles de données
@@ -335,7 +341,55 @@ régénération après plusieurs ticks, saturation à `pvMax`, aucun gain au max
 écoulement réel du temps via `start`/`stop`, idempotence, cycle de vie des
 monstres.
 
-## 10. Conventions techniques
+## 10. Client navigateur (Brique 5)
+
+Frontend **Vite + TypeScript** dans [`src/client/`](src/client/). Aucun
+framework : DOM + Canvas 2D, pour rester lisible et léger.
+
+### 10.1 Connexion & contrat partagé
+
+- Le client ouvre une WebSocket vers `ws://<host>:8080` et envoie l'intention
+  `CONNECT { pseudo }` dès l'ouverture.
+- [`client/protocol.ts`](src/client/protocol.ts) est un **miroir autonome** du
+  contrat réseau (formes JSON échangées). Il évite de compiler le code serveur
+  (Node) dans le bundle navigateur. *Toute évolution du protocole doit être
+  répercutée des deux côtés* (un futur paquet partagé pourra fusionner les
+  deux).
+- Le `PLAYER_STATE` a été enrichi d'un champ `weapons` (armes équipées
+  résolues) afin que le HUD affiche nom/niveau/XP/affixes/sorts par slot.
+
+### 10.2 Interface
+
+- **Écran d'accueil** : champ pseudo + bouton « Rejoindre le Multivers ».
+- **HUD** : pseudo, statut **PK/Pacifiste**, barre de **PV actuels / PV max**,
+  détail des **Slot Principal / Secondaire** (nom, niveau, barre d'XP, affixes
+  et sorts). Les affixes/sorts du slot **secondaire** sont affichés *grisés*
+  (inactifs) — visualisation directe de la règle d'agrégation de la Brique 1.
+- **Stats agrégées** (Force, Agilité, Bonus PV, PV max).
+
+### 10.3 Zone de jeu & commandes
+
+- **Canvas 2D** : grille du biome, joueur (carré liseré) à sa position `(x, y)`,
+  autres joueurs en gris (via `WORLD_UPDATE`).
+- **Déplacement** : clic sur la carte **ou** flèches / ZQSD / WASD → envoie
+  l'intention `MOVE`. Le client borne le déplacement à `MAX_MOVE_DISTANCE`
+  pour rester accepté ; un `MOVE` aberrant rejeté par le serveur renvoie l'état
+  officiel (snap-back) — l'autorité reste serveur.
+- **Bouton debug « Gagner de l'XP »** : envoie `GAIN_XP_DEBUG` et l'on voit
+  l'arme évoluer en direct (niveau, XP, nouveaux affixes/sorts).
+
+### 10.4 Lancer le client
+
+```bash
+npm start          # serveur autoritaire (WebSocket :8080 + game loop)
+npm run dev:client # client Vite en dev (http://localhost:5173)
+```
+
+Build de production : `npm run build:client` (sortie dans `dist/client/`).
+Validé bout-en-bout via un test navigateur headless (Chromium) : connexion →
+HUD rempli → `GAIN_XP_DEBUG` → montée de l'arme au niveau 2 rendue à l'écran.
+
+## 11. Conventions techniques
 
 - **TypeScript strict** (`strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`) — voir [`tsconfig.json`](tsconfig.json).
@@ -346,12 +400,16 @@ monstres.
 - Les **fabriques** (`createPlayer`, `createWeapon`) centralisent les valeurs
   par défaut pour garantir des entités cohérentes.
 
-## 11. Scripts npm
+## 12. Scripts npm
 
 | Script | Action |
 | --- | --- |
-| `npm run build` | Compile `src/` → `dist/` |
-| `npm run dev` | Compilation en watch |
-| `npm run typecheck` | Vérification de types sans émission |
+| `npm run build` | Compile le serveur `src/` → `dist/` |
+| `npm run dev` | Compilation serveur en watch |
+| `npm run typecheck` | Vérification de types serveur (sans émission) |
+| `npm run typecheck:client` | Vérification de types client (lib DOM) |
 | `npm test` | Tests (`node --test` via `tsx`) |
-| `npm start` | Lance le serveur compilé |
+| `npm start` | Lance le serveur compilé (WebSocket :8080 + game loop) |
+| `npm run dev:client` | Client Vite en dev (http://localhost:5173) |
+| `npm run build:client` | Build de production du client → `dist/client/` |
+| `npm run preview:client` | Sert le build client (Vite preview) |

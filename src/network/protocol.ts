@@ -1,5 +1,6 @@
 import type { AggregatedStats } from "../models/stats.js";
 import type { Player } from "../models/player.js";
+import type { Weapon } from "../models/weapon.js";
 
 /**
  * Protocole réseau du serveur autoritaire.
@@ -68,14 +69,22 @@ export interface PublicPlayer {
   position: Player["position"];
 }
 
+/** Armes effectivement équipées dans les deux slots (résolues côté serveur). */
+export interface EquippedWeapons {
+  slotPrincipal: Weapon | null;
+  slotSecondaire: Weapon | null;
+}
+
 /**
- * État complet du joueur connecté : son entité + ses statistiques agrégées
- * (résultat de la règle d'agrégation de la Brique 1).
+ * État complet du joueur connecté : son entité, ses statistiques agrégées
+ * (règle d'agrégation de la Brique 1) et le détail des armes équipées (pour le
+ * HUD : nom, niveau, XP, affixes, sorts).
  */
 export interface PlayerStateMessage {
   type: typeof ServerMessageType.PlayerState;
   player: Player;
   stats: AggregatedStats;
+  weapons: EquippedWeapons;
 }
 
 /** Position des joueurs présents dans le monde (diffusion). */

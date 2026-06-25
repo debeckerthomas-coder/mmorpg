@@ -9,6 +9,10 @@
     "dev": "tsc --watch",
     "start": "node dist/server/index.js",
     "typecheck": "tsc --noEmit",
+    "typecheck:client": "tsc -p src/client/tsconfig.json",
+    "dev:client": "vite",
+    "build:client": "vite build",
+    "preview:client": "vite preview",
     "test": "node --test --import tsx ./src/**/*.test.ts"
   },
   "keywords": [
@@ -29,6 +33,7 @@
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
   }
 }
