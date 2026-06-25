@@ -2,6 +2,7 @@ import { createJsonPersistence } from "../persistence/index.js";
 import type { PersistenceLayer } from "../persistence/index.js";
 import { computeAggregatedStats, type Weapon } from "../models/index.js";
 import { startNetworkServer } from "../network/index.js";
+import { GameLoop, TICK_INTERVAL_MS, TICK_RATE } from "./gameloop.js";
 
 /**
  * Contexte du serveur autoritaire.
@@ -60,7 +61,17 @@ if (isMain) {
     console.log(
       `[server] Persistance initialisée — ${players.length} joueur(s) chargé(s).`,
     );
-    await startNetworkServer({ port, persistence: ctx.persistence });
+    const net = await startNetworkServer({ port, persistence: ctx.persistence });
     console.log(`[server] Serveur WebSocket autoritaire en écoute sur :${port}`);
+
+    // Démarre la boucle de jeu (régénération PV, simulation du monde).
+    const loop = new GameLoop({
+      persistence: ctx.persistence,
+      participants: net.hub,
+    });
+    loop.start();
+    console.log(
+      `[server] Game loop démarrée (${TICK_RATE} ticks/s, ${TICK_INTERVAL_MS} ms/tick).`,
+    );
   })();
 }

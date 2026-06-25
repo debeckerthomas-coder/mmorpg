@@ -71,6 +71,19 @@ export class GameHub {
   }
 
   /**
+   * Identifiants des joueurs actuellement connectés (sessions ayant validé un
+   * CONNECT). Consommé par la boucle de jeu (Brique 4) pour savoir quels
+   * joueurs simuler à chaque tick.
+   */
+  connectedPlayerIds(): PlayerId[] {
+    const ids: PlayerId[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.playerId) ids.push(session.playerId);
+    }
+    return ids;
+  }
+
+  /**
    * Point d'entrée transport-agnostique : reçoit le texte brut d'un message,
    * le parse de façon sécurisée, puis dispatche. Ne lève jamais.
    */

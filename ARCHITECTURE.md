@@ -22,12 +22,12 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | **1. Modèles de données + persistance** | ✅ Fait | Modèles `Player` / `Weapon`, règle d'agrégation, persistance JSON, tests |
 | **2. Loot & évolution d'arme** | ✅ Fait | `gainXp`, level up, croissance de stats par Type, génération d'affixes/sorts pondérée par rareté, tests |
 | **3. Couche réseau (WebSocket)** | ✅ Fait | Protocole d'intentions/états, hub autoritaire, serveur `ws`, parsing sécurisé, tests |
-| 4. Boucle de jeu (game loop) | ⏳ À venir | Tick serveur, résolution combat, mouvements |
+| **4. Boucle de jeu (game loop)** | ✅ Fait | Tick serveur fixe (20/s), régénération PV passive, entités mobiles (monstres), start/stop, tests |
 | 5. Interface graphique (navigateur) | ⏳ À venir | Rendu client, prédiction/réconciliation |
 
-Les briques 1 à 3 couvrent les modèles de données, la persistance, le moteur
-d'évolution d'arme et la couche réseau du serveur autoritaire. Aucune interface
-graphique n'est encore fournie.
+Les briques 1 à 4 couvrent les modèles de données, la persistance, le moteur
+d'évolution d'arme, la couche réseau et la boucle de simulation du serveur
+autoritaire. Aucune interface graphique n'est encore fournie.
 
 ## 3. Structure des dossiers
 
@@ -59,8 +59,10 @@ graphique n'est encore fournie.
     │   ├── server.ts        # Serveur WebSocket (ws) + cycle de vie
     │   ├── *.test.ts        # Tests protocole / hub / intégration WebSocket
     │   └── index.ts         # Ré-exports publics
-    └── server/              # Serveur autoritaire (bootstrap)
-        └── index.ts         # Démarrage persistance + serveur WebSocket
+    └── server/              # Serveur autoritaire (bootstrap + simulation)
+        ├── gameloop.ts      # Boucle de tick (régénération, monstres)
+        ├── gameloop.test.ts # Tests de la boucle de jeu
+        └── index.ts         # Démarrage persistance + WebSocket + game loop
 ```
 
 ## 4. Modèles de données
@@ -285,7 +287,55 @@ WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage
 - [`server.test.ts`](src/network/server.test.ts) : test **d'intégration**
   bout-en-bout sur un vrai serveur `ws` (port éphémère) + client réel.
 
-## 9. Conventions techniques
+## 9. Boucle de jeu / Server Ticks (Brique 4)
+
+Implémentée dans [`gameloop.ts`](src/server/gameloop.ts). Moteur de simulation
+temps réel du serveur autoritaire, à **pas de temps fixe**.
+
+### 9.1 Tick rate
+
+| Constante | Valeur | Sens |
+| --- | --- | --- |
+| `TICK_RATE` | **20** | ticks par seconde |
+| `TICK_INTERVAL_MS` | **50 ms** | durée d'un tick (`1000 / TICK_RATE`) |
+
+À chaque tick, le serveur fait avancer l'état du monde. Le pas de temps fixe
+garantit une simulation **déterministe et indépendante du débit réseau** —
+fondement d'un serveur autoritaire.
+
+### 9.2 Gestion de la boucle
+
+- `start()` arme un `setInterval(tickIntervalMs)` (idempotent ; le timer est
+  `unref()` pour ne pas bloquer l'arrêt du process). `stop()` l'annule
+  proprement. `isRunning` / `tickCount` exposent l'état.
+- `tick(deltaMs?)` est **public** : on peut avancer la simulation manuellement,
+  ce qui rend la boucle **déterministe et testable** sans dépendre du timer.
+- Un garde-fou **anti-réentrance** saute un tick si le précédent (asynchrone,
+  car il lit/écrit la persistance) n'est pas terminé.
+
+### 9.3 Simulation de ce jalon
+
+- **Régénération passive des PV** : pour chaque joueur connecté (fourni par le
+  `GameHub` via `WorldParticipants.connectedPlayerIds()`), si
+  `pvActuels < pvMax`, on régénère
+  `pvMax × regenPerSecond × (deltaMs / 1000)` PV, **borné à `pvMax`**.
+  `pvMax` provient des **stats agrégées** (règle de la Brique 1).
+  Défaut : `regenPerSecond = 5 %/s` (`DEFAULT_REGEN_PER_SECOND`).
+- **Entités mobiles (`MobileEntity` / `Monster`)** : structure minimale
+  (`id`, `name`, `pvActuels`, `pvMax`, `position`) gérée via
+  `spawnMonster` / `removeMonster` / `getMonsters`. Inertes pour l'instant
+  (présence simulée) — socle pour l'IA et le combat (briques suivantes).
+- Hook `onTick(info)` pour brancher une future diffusion d'état périodique.
+
+Le bootstrap ([`server/index.ts`](src/server/index.ts)) démarre la boucle après
+le serveur WebSocket, en lui passant le `GameHub` comme source de participants.
+
+Couvert par [`gameloop.test.ts`](src/server/gameloop.test.ts) : tick rate,
+régénération après plusieurs ticks, saturation à `pvMax`, aucun gain au max,
+écoulement réel du temps via `start`/`stop`, idempotence, cycle de vie des
+monstres.
+
+## 10. Conventions techniques
 
 - **TypeScript strict** (`strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`) — voir [`tsconfig.json`](tsconfig.json).
@@ -296,7 +346,7 @@ WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage
 - Les **fabriques** (`createPlayer`, `createWeapon`) centralisent les valeurs
   par défaut pour garantir des entités cohérentes.
 
-## 10. Scripts npm
+## 11. Scripts npm
 
 | Script | Action |
 | --- | --- |
