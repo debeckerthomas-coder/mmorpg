@@ -21,12 +21,13 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | --- | --- | --- |
 | **1. Modèles de données + persistance** | ✅ Fait | Modèles `Player` / `Weapon`, règle d'agrégation, persistance JSON, tests |
 | **2. Loot & évolution d'arme** | ✅ Fait | `gainXp`, level up, croissance de stats par Type, génération d'affixes/sorts pondérée par rareté, tests |
-| 3. Couche réseau (WebSocket) | ⏳ À venir | Connexions, protocole d'intentions, diffusion d'état |
+| **3. Couche réseau (WebSocket)** | ✅ Fait | Protocole d'intentions/états, hub autoritaire, serveur `ws`, parsing sécurisé, tests |
 | 4. Boucle de jeu (game loop) | ⏳ À venir | Tick serveur, résolution combat, mouvements |
 | 5. Interface graphique (navigateur) | ⏳ À venir | Rendu client, prédiction/réconciliation |
 
-Les briques 1 et 2 couvrent les modèles de données, la persistance et le moteur
-d'évolution d'arme. Aucune interface graphique n'est encore fournie.
+Les briques 1 à 3 couvrent les modèles de données, la persistance, le moteur
+d'évolution d'arme et la couche réseau du serveur autoritaire. Aucune interface
+graphique n'est encore fournie.
 
 ## 3. Structure des dossiers
 
@@ -50,9 +51,16 @@ d'évolution d'arme. Aucune interface graphique n'est encore fournie.
     ├── persistence/         # Système de persistance
     │   ├── repository.ts    # Contrat générique Repository + PersistenceLayer
     │   ├── jsonStore.ts     # Implémentation fichier JSON (écriture atomique)
+    │   ├── memoryStore.ts   # Implémentation en mémoire (tests / dev)
     │   └── index.ts         # Fabrique de la couche de persistance
-    └── server/              # Serveur autoritaire (socle)
-        └── index.ts         # Bootstrap + résolution des stats joueur
+    ├── network/             # Couche réseau (Brique 3)
+    │   ├── protocol.ts      # ClientMessage / ServerMessage + parsing sécurisé
+    │   ├── gameHub.ts       # Hub autoritaire (dispatch des intentions)
+    │   ├── server.ts        # Serveur WebSocket (ws) + cycle de vie
+    │   ├── *.test.ts        # Tests protocole / hub / intégration WebSocket
+    │   └── index.ts         # Ré-exports publics
+    └── server/              # Serveur autoritaire (bootstrap)
+        └── index.ts         # Démarrage persistance + serveur WebSocket
 ```
 
 ## 4. Modèles de données
@@ -219,7 +227,65 @@ L'abstraction `Repository` permet de remplacer le stockage JSON par un SGBD
 Le point `PersistenceLayer.flush()` est réservé à une future stratégie
 d'écriture différée (batching) pour absorber un volume d'écritures élevé.
 
-## 8. Conventions techniques
+Une implémentation **en mémoire** (`MemoryRepository` /
+`createMemoryPersistence`, [`memoryStore.ts`](src/persistence/memoryStore.ts))
+sert aux tests réseau et au développement, sans toucher au disque.
+
+## 8. Couche réseau (Brique 3)
+
+Transforme le socle en **serveur autoritaire** : les clients envoient des
+*intentions*, le serveur valide, applique sur les modèles (via la persistance)
+et **diffuse l'état faisant foi**. Tout transite en **JSON sur WebSocket**.
+
+### 8.1 Architecture
+
+```
+WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage──▶  GameHub
+   server.ts                      protocol.ts                          gameHub.ts
+        ▲                                                                  │
+        └────────────── ServerMessage (JSON) ◀───── send()/broadcast ──────┘
+```
+
+- [`protocol.ts`](src/network/protocol.ts) : types `ClientMessage` /
+  `ServerMessage` (unions discriminées par `type`) + `parseClientMessage`,
+  un parseur **défensif qui ne lève jamais** (retourne un `ParseResult`).
+- [`gameHub.ts`](src/network/gameHub.ts) : `GameHub`, cœur autoritaire
+  **découplé du transport** (les sessions exposent une simple fonction `send`),
+  donc entièrement testable sans socket réelle.
+- [`server.ts`](src/network/server.ts) : serveur `ws` sur un **port
+  configurable** (env `PORT`, défaut **8080**) ; gère connexion, réception
+  (parsing sécurisé, robuste au JSON malformé), déconnexion et erreurs socket.
+
+### 8.2 Intentions — Client → Serveur (`ClientMessage`)
+
+| `type` | Charge utile | Action serveur | Validation |
+| --- | --- | --- | --- |
+| `CONNECT` | `{ pseudo: string }` | Charge le `Player` par pseudo ou le **crée** (avec une arme de départ équipée), lie la session, renvoie `PLAYER_STATE` + diffuse `WORLD_UPDATE` | `pseudo` non vide |
+| `MOVE` | `{ x: number, y: number }` | Valide puis met à jour la position autoritaire, persiste, renvoie `PLAYER_STATE` + `WORLD_UPDATE` | distance ≤ `MAX_MOVE_DISTANCE` (50) ; sinon rejet anti-téléportation |
+| `GAIN_XP_DEBUG` | `{ amount: number }` | **(debug)** Applique `gainXp` à l'arme du Slot_Principal, persiste, renvoie `PLAYER_STATE` | session connectée + arme équipée ; `amount ≥ 0` |
+
+### 8.3 États / réponses — Serveur → Client (`ServerMessage`)
+
+| `type` | Charge utile | Quand |
+| --- | --- | --- |
+| `PLAYER_STATE` | `{ player: Player, stats: AggregatedStats }` | Après CONNECT / MOVE / GAIN_XP_DEBUG (état + stats agrégées du joueur) |
+| `WORLD_UPDATE` | `{ players: PublicPlayer[] }` | Diffusion à tous : positions publiques des joueurs présents (CONNECT, MOVE, déconnexion) |
+| `ERROR` | `{ code: ErrorCode, message: string }` | Intention invalide / JSON malformé / état incohérent |
+
+**Codes d'erreur** (`ErrorCode`) : `MALFORMED_JSON`, `UNKNOWN_TYPE`,
+`INVALID_PAYLOAD`, `NOT_CONNECTED`, `INVALID_MOVE`, `NO_WEAPON_EQUIPPED`.
+
+### 8.4 Tests
+
+- [`protocol.test.ts`](src/network/protocol.test.ts) : parsing sécurisé
+  (CONNECT/MOVE/GAIN_XP_DEBUG valides & invalides, JSON malformé, type inconnu).
+- [`gameHub.test.ts`](src/network/gameHub.test.ts) : CONNECT crée/recharge un
+  joueur, MOVE valide vs aberrant, NOT_CONNECTED, GAIN_XP_DEBUG → level up,
+  robustesse au JSON malformé, déconnexion.
+- [`server.test.ts`](src/network/server.test.ts) : test **d'intégration**
+  bout-en-bout sur un vrai serveur `ws` (port éphémère) + client réel.
+
+## 9. Conventions techniques
 
 - **TypeScript strict** (`strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`) — voir [`tsconfig.json`](tsconfig.json).
@@ -230,7 +296,7 @@ d'écriture différée (batching) pour absorber un volume d'écritures élevé.
 - Les **fabriques** (`createPlayer`, `createWeapon`) centralisent les valeurs
   par défaut pour garantir des entités cohérentes.
 
-## 9. Scripts npm
+## 10. Scripts npm
 
 | Script | Action |
 | --- | --- |
