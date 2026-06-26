@@ -1,4 +1,4 @@
-import { createJsonPersistence } from "../persistence/index.js";
+import { createSqlitePersistence } from "../persistence/index.js";
 import type { PersistenceLayer } from "../persistence/index.js";
 import { computeAggregatedStats, type Weapon } from "../models/index.js";
 import { startNetworkServer } from "../network/index.js";
@@ -18,7 +18,7 @@ export interface ServerContext {
 }
 
 export const createServer = (
-  persistence: PersistenceLayer = createJsonPersistence(),
+  persistence: PersistenceLayer = createSqlitePersistence(),
 ): ServerContext => ({ persistence });
 
 /**

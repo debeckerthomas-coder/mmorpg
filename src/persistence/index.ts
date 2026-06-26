@@ -6,6 +6,7 @@ import type { PersistenceLayer } from "./repository.js";
 export * from "./repository.js";
 export * from "./jsonStore.js";
 export * from "./memoryStore.js";
+export * from "./sqliteStore.js";
 
 /**
  * Construit la couche de persistance par défaut (stockage JSON sur disque).

@@ -25,6 +25,7 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | **4. Boucle de jeu (game loop)** | ✅ Fait | Tick serveur fixe (20/s), régénération PV passive, entités mobiles (monstres), start/stop, tests |
 | **5. Interface graphique (navigateur)** | ✅ Fait | Client Vite/TS : login, HUD (PV, équipement, affixes/sorts), zone canvas, déplacement (clic/clavier), debug XP |
 | **6. Bestiaire & Portails (Solo Leveling)** | ✅ Fait | Portails (rangs C/B/A/S), monstres, IA de poursuite, combat joueur↔mob, gain d'XP au kill, rendu client, tests |
+| **7. Persistance SQL (SQLite)** | ✅ Fait | `SqlitePersistence` (better-sqlite3), schéma relationnel, jointures affixes/sorts, transactions, défaut serveur, tests round-trip |
 
 Les 5 briques de base sont en place : modèles de données, persistance, évolution
 d'arme, couche réseau, boucle de simulation **et** client navigateur. Le
@@ -37,7 +38,7 @@ prototype jouable de bout en bout est fonctionnel.
 ├── ARCHITECTURE.md          # Ce document
 ├── package.json             # Config npm + scripts TypeScript
 ├── tsconfig.json            # Config compilateur (strict, NodeNext)
-├── data/                    # Sauvegardes runtime (JSON, git-ignorées)
+├── data/                    # Runtime : database.db (SQLite) / JSON, git-ignorés
 └── src/
     ├── models/              # Structure des données (Data Models)
     │   ├── ids.ts           # Identifiants typés (branded types) + génération
@@ -55,6 +56,8 @@ prototype jouable de bout en bout est fonctionnel.
     │   ├── repository.ts    # Contrat générique Repository + PersistenceLayer
     │   ├── jsonStore.ts     # Implémentation fichier JSON (écriture atomique)
     │   ├── memoryStore.ts   # Implémentation en mémoire (tests / dev)
+    │   ├── sqliteStore.ts   # Implémentation SQLite relationnelle (Brique 7)
+    │   ├── sqlite.test.ts   # Tests round-trip SQLite
     │   └── index.ts         # Fabrique de la couche de persistance
     ├── network/             # Couche réseau (Brique 3)
     │   ├── protocol.ts      # ClientMessage / ServerMessage + parsing sécurisé
@@ -223,27 +226,72 @@ la table de rareté, montant négatif rejeté.
 
 ## 7. Persistance
 
-### Choix : stockage JSON fichier, abstrait derrière un `Repository`
+### Le pattern `Repository`
 
-- Le serveur ne dépend que de l'interface `Repository<TEntity, TId>` et de la
-  façade `PersistenceLayer` ([`repository.ts`](src/persistence/repository.ts)),
-  **jamais** d'une implémentation concrète.
-- `JsonFileRepository` ([`jsonStore.ts`](src/persistence/jsonStore.ts)) charge
-  la collection en mémoire au premier accès (jeu « micro » → tient en RAM,
-  lectures instantanées) et écrit de manière **atomique**
-  (`write tmp` + `rename`) pour éviter la corruption en cas d'arrêt brutal.
-- Les fichiers de données vivent dans `data/` et sont **git-ignorés**.
+Le serveur ne dépend que de l'interface `Repository<TEntity, TId>` et de la
+façade `PersistenceLayer` ([`repository.ts`](src/persistence/repository.ts)),
+**jamais** d'une implémentation concrète. Trois implémentations interchangeables
+coexistent :
+
+| Implémentation | Fichier | Usage |
+| --- | --- | --- |
+| **SQLite** (`SqlitePersistence`) | [`sqliteStore.ts`](src/persistence/sqliteStore.ts) | **Défaut serveur** (Brique 7) — relationnel, durable |
+| JSON fichier (`JsonFileRepository`) | [`jsonStore.ts`](src/persistence/jsonStore.ts) | Écriture atomique (`tmp` + `rename`), simple |
+| Mémoire (`MemoryRepository`) | [`memoryStore.ts`](src/persistence/memoryStore.ts) | Tests & dev, volatile |
+
+Grâce à l'identité des interfaces, le `GameHub` et la `GameLoop` ne voient
+aucune différence : `createServer()` utilise désormais
+`createSqlitePersistence()` par défaut.
+
+### 7.1 Persistance SQLite (Brique 7)
+
+Driver : **`better-sqlite3`** (synchrone, rapide, binaires précompilés). La base
+vit dans `data/database.db` (git-ignorée) ; `initDatabase()` active les
+contraintes (`PRAGMA foreign_keys = ON`), le mode WAL, et applique le schéma.
+
+**Schéma relationnel** (clés primaires + étrangères) :
+
+```
+weapons(id PK, name, type, level, current_xp, next_level_xp, raw_stats[JSON])
+   │
+   ├─< weapon_affixes(id PK, weapon_id FK→weapons ON DELETE CASCADE,
+   │                  code, label, rarity, power)
+   └─< weapon_spells (id PK, weapon_id FK→weapons ON DELETE CASCADE,
+                      name, required_type, unlock_level, cost, cooldown_ms)
+
+players(id PK, pseudo, pk, pv_base, pv_actuels, pos_x, pos_y, zone,
+        slot_principal  FK→weapons ON DELETE SET NULL,
+        slot_secondaire FK→weapons ON DELETE SET NULL)
+```
+
+**Choix techniques :**
+- **Reconstruction de l'objet métier (Brique 1)** : charger une `Weapon` fait
+  une jointure logique — la ligne `weapons` plus ses lignes `weapon_affixes` et
+  `weapon_spells` — pour rebâtir l'`Affix[]` et le `GeneratedSpell[]`. Un
+  `Player` porte les IDs d'armes (`slot_principal/secondaire`) ; les armes
+  complètes sont résolues via le `WeaponRepository` (comme le fait déjà la règle
+  d'agrégation).
+- **`raw_stats` en colonne JSON** : `RawStats` est volontairement extensible
+  (`[key: string]: number`) ; le stocker en JSON garantit un round-trip fidèle
+  sans figer le schéma à chaque nouvelle stat.
+- **Sauvegardes atomiques** : `save(weapon)` s'exécute dans une **transaction
+  SQL** (`db.transaction`) — upsert de l'arme (`INSERT … ON CONFLICT DO UPDATE`)
+  puis remplacement complet des affixes/sorts (delete + insert) → pas de
+  doublon, tout ou rien. `ON DELETE CASCADE` nettoie les enfants quand une arme
+  est supprimée.
+- **`booléen` `pk`** stocké en `INTEGER` 0/1 ; `position` éclatée en
+  `pos_x/pos_y/zone`.
+
+Round-trip validé par [`sqlite.test.ts`](src/persistence/sqlite.test.ts) :
+un joueur PK équipé d'une arme à 2 affixes + 1 sort est sauvegardé puis
+**rechargé à l'identique** (`deepEqual`), plus tests de non-duplication,
+`getAll`/`delete`, et cascade.
 
 ### Évolution prévue
 
-L'abstraction `Repository` permet de remplacer le stockage JSON par un SGBD
-(SQLite, PostgreSQL) ou un cache (Redis) **sans toucher** à la logique de jeu.
-Le point `PersistenceLayer.flush()` est réservé à une future stratégie
-d'écriture différée (batching) pour absorber un volume d'écritures élevé.
-
-Une implémentation **en mémoire** (`MemoryRepository` /
-`createMemoryPersistence`, [`memoryStore.ts`](src/persistence/memoryStore.ts))
-sert aux tests réseau et au développement, sans toucher au disque.
+`PersistenceLayer.flush()` reste un point d'extension (écriture différée /
+batching). Le contrat `Repository` permettrait de passer à PostgreSQL ou un
+cache Redis **sans toucher** à la logique de jeu.
 
 ## 8. Couche réseau (Brique 3)
 

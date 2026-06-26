@@ -5,4 +5,7 @@ dist/
 
 # Données de persistance locales (sauvegardes runtime)
 data/*.json
+data/*.db
+data/*.db-wal
+data/*.db-shm
 !data/.gitkeep
