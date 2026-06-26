@@ -11,6 +11,7 @@ import {
   distance,
   weaponRange,
 } from "../server/combat.js";
+import { applyMove, type MoveInput } from "../server/movement.js";
 import {
   ClientMessageType,
   ErrorCode,
@@ -18,18 +19,12 @@ import {
   parseClientMessage,
   type ClientMessage,
   type EquippedWeapons,
+  type MoveMessage,
   type PublicMonster,
   type PublicPlayer,
   type PublicPortal,
   type ServerMessage,
 } from "./protocol.js";
-
-/**
- * Distance maximale autorisée pour une seule intention de déplacement.
- * Au-delà, le serveur considère le mouvement comme aberrant (téléportation /
- * triche) et le rejette en renvoyant l'état officiel au client.
- */
-export const MAX_MOVE_DISTANCE = 50;
 
 /**
  * Session d'un client connecté au hub.
@@ -41,6 +36,8 @@ export interface Session {
   readonly id: string;
   /** Identifiant du joueur, défini après une intention CONNECT réussie. */
   playerId: PlayerId | null;
+  /** Dernier numéro de séquence de MOVE traité (réconciliation client). */
+  lastProcessedSequence: number;
   send(message: ServerMessage): void;
 }
 
@@ -73,6 +70,7 @@ export class GameHub {
     const session: Session = {
       id: `conn-${++this.counter}`,
       playerId: null,
+      lastProcessedSequence: 0,
       send,
     };
     this.sessions.set(session.id, session);
@@ -126,7 +124,7 @@ export class GameHub {
       case ClientMessageType.Connect:
         return this.onConnect(session, message.pseudo);
       case ClientMessageType.Move:
-        return this.onMove(session, message.x, message.y);
+        return this.onMove(session, message);
       case ClientMessageType.GainXpDebug:
         return this.onGainXpDebug(session, message.amount);
       case ClientMessageType.AttackMob:
@@ -146,29 +144,25 @@ export class GameHub {
     await this.broadcastWorld();
   }
 
-  private async onMove(session: Session, x: number, y: number): Promise<void> {
+  /**
+   * Déplacement fluide autoritaire (prédiction réseau). Le serveur recalcule la
+   * position via `applyMove` (direction normalisée, Δt borné) : un client ne
+   * peut donc pas dépasser la vitesse max. On mémorise le `sequenceNumber`
+   * traité pour permettre la réconciliation côté client.
+   */
+  private async onMove(session: Session, input: MoveMessage): Promise<void> {
     const player = await this.requirePlayer(session);
     if (!player) return;
 
-    const dx = x - player.position.x;
-    const dy = y - player.position.y;
-    const distance = Math.hypot(dx, dy);
-
-    if (distance > MAX_MOVE_DISTANCE) {
-      // Mouvement aberrant : on rejette et on renvoie l'état officiel
-      // (le client doit « snap back » à la position autoritaire).
-      session.send({
-        type: ServerMessageType.Error,
-        code: ErrorCode.InvalidMove,
-        message: `Déplacement trop grand (${distance.toFixed(
-          1,
-        )} > ${MAX_MOVE_DISTANCE})`,
-      });
-      await this.sendPlayerState(session, player);
-      return;
-    }
-
-    player.position = { ...player.position, x, y };
+    const moveInput: MoveInput = {
+      sequenceNumber: input.sequenceNumber,
+      dirX: input.dirX,
+      dirY: input.dirY,
+      deltaMs: input.deltaMs,
+    };
+    const next = applyMove(player.position, moveInput);
+    player.position = { ...player.position, x: next.x, y: next.y };
+    session.lastProcessedSequence = input.sequenceNumber;
     await this.persistence.players.save(player);
 
     await this.sendPlayerState(session, player);
@@ -342,6 +336,7 @@ export class GameHub {
       player,
       stats,
       weapons,
+      lastProcessedSequence: session.lastProcessedSequence,
     });
   }
 

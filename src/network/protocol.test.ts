@@ -21,9 +21,25 @@ test("rejette un CONNECT sans pseudo", () => {
   if (!r.ok) assert.equal(r.code, ErrorCode.InvalidPayload);
 });
 
-test("rejette un MOVE avec coordonnées non numériques", () => {
+test("parse un MOVE valide (séquence + direction + delta)", () => {
   const r = parseClientMessage(
-    JSON.stringify({ type: "MOVE", x: "10", y: 5 }),
+    JSON.stringify({
+      type: "MOVE",
+      sequenceNumber: 3,
+      dirX: 1,
+      dirY: 0,
+      deltaMs: 16,
+    }),
+  );
+  assert.equal(r.ok, true);
+  if (r.ok && r.message.type === "MOVE") {
+    assert.equal(r.message.sequenceNumber, 3);
+  }
+});
+
+test("rejette un MOVE sans direction/séquence numériques", () => {
+  const r = parseClientMessage(
+    JSON.stringify({ type: "MOVE", sequenceNumber: 1, dirX: "x", dirY: 0, deltaMs: 16 }),
   );
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, ErrorCode.InvalidPayload);

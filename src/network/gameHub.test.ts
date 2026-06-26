@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createMemoryPersistence } from "../persistence/memoryStore.js";
-import { GameHub, MAX_MOVE_DISTANCE } from "./gameHub.js";
+import { PLAYER_SPEED, maxDistanceFor } from "../server/movement.js";
+import { GameHub } from "./gameHub.js";
 import {
   ClientMessageType,
   ErrorCode,
@@ -65,49 +66,76 @@ test("CONNECT recharge un joueur existant (pas de doublon par pseudo)", async ()
   assert.equal(s1.playerId, s2.playerId);
 });
 
-test("MOVE valide met à jour la position autoritaire", async () => {
+test("MOVE applique un déplacement autoritaire et renvoie lastProcessedSequence", async () => {
   const { hub, session, sent, persistence } = setup();
   await hub.handleRaw(
     session,
     json({ type: ClientMessageType.Connect, pseudo: "Alice" }),
   );
 
-  await hub.handleRaw(session, json({ type: ClientMessageType.Move, x: 10, y: 10 }));
+  // Direction +x pendant 100 ms → déplacement = PLAYER_SPEED * 0.1.
+  await hub.handleRaw(
+    session,
+    json({
+      type: ClientMessageType.Move,
+      sequenceNumber: 7,
+      dirX: 1,
+      dirY: 0,
+      deltaMs: 100,
+    }),
+  );
 
   const state = lastOfType(sent, ServerMessageType.PlayerState);
-  assert.equal(state?.player.position.x, 10);
-  assert.equal(state?.player.position.y, 10);
+  assert.ok(state);
+  assert.equal(state.lastProcessedSequence, 7);
+  assert.ok(
+    Math.abs(state.player.position.x - PLAYER_SPEED * 0.1) < 1e-6,
+    `position.x attendu ~${PLAYER_SPEED * 0.1}, reçu ${state.player.position.x}`,
+  );
+  assert.ok(Math.abs(state.player.position.y) < 1e-6);
 
   const persisted = await persistence.players.get(session.playerId!);
-  assert.equal(persisted?.position.x, 10);
+  assert.ok(Math.abs((persisted?.position.x ?? 0) - PLAYER_SPEED * 0.1) < 1e-6);
 });
 
-test("MOVE aberrant est rejeté et l'état officiel est renvoyé", async () => {
+test("MOVE triché (vecteur géant) est borné à la vitesse max", async () => {
   const { hub, session, sent, persistence } = setup();
   await hub.handleRaw(
     session,
     json({ type: ClientMessageType.Connect, pseudo: "Alice" }),
   );
 
-  // Distance >> MAX_MOVE_DISTANCE depuis (0,0).
   await hub.handleRaw(
     session,
-    json({ type: ClientMessageType.Move, x: 9999, y: 9999 }),
+    json({
+      type: ClientMessageType.Move,
+      sequenceNumber: 1,
+      dirX: 99999,
+      dirY: 0,
+      deltaMs: 100,
+    }),
   );
 
-  const error = lastOfType(sent, ServerMessageType.Error);
-  assert.equal(error?.code, ErrorCode.InvalidMove);
-
-  // La position autoritaire n'a pas bougé.
+  // La position ne « téléporte » pas : déplacement borné à maxDistanceFor(100).
   const persisted = await persistence.players.get(session.playerId!);
-  assert.equal(persisted?.position.x, 0);
-  assert.equal(persisted?.position.y, 0);
-  assert.ok(MAX_MOVE_DISTANCE > 0);
+  assert.ok(
+    (persisted?.position.x ?? 0) <= maxDistanceFor(100) + 1e-6,
+    `déplacement borné attendu ≤ ${maxDistanceFor(100)}, reçu ${persisted?.position.x}`,
+  );
 });
 
 test("MOVE avant CONNECT renvoie une erreur NOT_CONNECTED", async () => {
   const { hub, session, sent } = setup();
-  await hub.handleRaw(session, json({ type: ClientMessageType.Move, x: 1, y: 1 }));
+  await hub.handleRaw(
+    session,
+    json({
+      type: ClientMessageType.Move,
+      sequenceNumber: 1,
+      dirX: 1,
+      dirY: 0,
+      deltaMs: 16,
+    }),
+  );
 
   const error = lastOfType(sent, ServerMessageType.Error);
   assert.equal(error?.code, ErrorCode.NotConnected);

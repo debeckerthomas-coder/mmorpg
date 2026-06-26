@@ -36,11 +36,17 @@ export interface ConnectMessage {
   pseudo: string;
 }
 
-/** Le joueur exprime l'intention de se déplacer vers (x, y). */
+/**
+ * Intention de déplacement fluide (prédiction réseau) : un vecteur de
+ * direction + le delta-time de la frame, accompagnés d'un numéro de séquence
+ * unique pour la réconciliation côté client.
+ */
 export interface MoveMessage {
   type: typeof ClientMessageType.Move;
-  x: number;
-  y: number;
+  sequenceNumber: number;
+  dirX: number;
+  dirY: number;
+  deltaMs: number;
 }
 
 /** Commande de debug : force l'arme du Slot_Principal à gagner de l'XP. */
@@ -97,6 +103,11 @@ export interface PlayerStateMessage {
   player: Player;
   stats: AggregatedStats;
   weapons: EquippedWeapons;
+  /**
+   * Dernier `sequenceNumber` de MOVE traité par le serveur (réconciliation).
+   * 0 tant qu'aucun déplacement n'a été traité pour cette session.
+   */
+  lastProcessedSequence: number;
 }
 
 /** Vue publique d'un portail. */
@@ -200,16 +211,29 @@ export const parseClientMessage = (raw: string): ParseResult => {
       };
     }
     case ClientMessageType.Move: {
-      if (!isFiniteNumber(obj["x"]) || !isFiniteNumber(obj["y"])) {
+      if (
+        !isFiniteNumber(obj["sequenceNumber"]) ||
+        !isFiniteNumber(obj["dirX"]) ||
+        !isFiniteNumber(obj["dirY"]) ||
+        !isFiniteNumber(obj["deltaMs"]) ||
+        obj["deltaMs"] < 0
+      ) {
         return {
           ok: false,
           code: ErrorCode.InvalidPayload,
-          reason: "MOVE requiert des coordonnées 'x' et 'y' numériques",
+          reason:
+            "MOVE requiert 'sequenceNumber', 'dirX', 'dirY' et 'deltaMs' (≥ 0) numériques",
         };
       }
       return {
         ok: true,
-        message: { type: ClientMessageType.Move, x: obj["x"], y: obj["y"] },
+        message: {
+          type: ClientMessageType.Move,
+          sequenceNumber: obj["sequenceNumber"],
+          dirX: obj["dirX"],
+          dirY: obj["dirY"],
+          deltaMs: obj["deltaMs"],
+        },
       };
     }
     case ClientMessageType.GainXpDebug: {

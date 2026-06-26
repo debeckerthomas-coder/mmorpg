@@ -79,7 +79,13 @@ export interface AggregatedStatsView {
 
 export type ClientMessage =
   | { type: typeof ClientMessageType.Connect; pseudo: string }
-  | { type: typeof ClientMessageType.Move; x: number; y: number }
+  | {
+      type: typeof ClientMessageType.Move;
+      sequenceNumber: number;
+      dirX: number;
+      dirY: number;
+      deltaMs: number;
+    }
   | { type: typeof ClientMessageType.GainXpDebug; amount: number }
   | { type: typeof ClientMessageType.AttackMob; mobId: string };
 
@@ -108,6 +114,7 @@ export interface PlayerStateMessage {
     slotPrincipal: WeaponView | null;
     slotSecondaire: WeaponView | null;
   };
+  lastProcessedSequence: number;
 }
 
 export interface WorldUpdateMessage {

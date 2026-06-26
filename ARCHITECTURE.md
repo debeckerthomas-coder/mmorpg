@@ -26,6 +26,7 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | **5. Interface graphique (navigateur)** | ✅ Fait | Client Vite/TS : login, HUD (PV, équipement, affixes/sorts), zone canvas, déplacement (clic/clavier), debug XP |
 | **6. Bestiaire & Portails (Solo Leveling)** | ✅ Fait | Portails (rangs C/B/A/S), monstres, IA de poursuite, combat joueur↔mob, gain d'XP au kill, rendu client, tests |
 | **7. Persistance SQL (SQLite)** | ✅ Fait | `SqlitePersistence` (better-sqlite3), schéma relationnel, jointures affixes/sorts, transactions, défaut serveur, tests round-trip |
+| **8. Déplacements fluides (prédiction réseau)** | ✅ Fait | MOVE par direction + Δt + séquence, validation autoritaire à la vitesse max, prédiction client 60 FPS, `pendingInputs`, réconciliation/rejeu, tests |
 
 Les 5 briques de base sont en place : modèles de données, persistance, évolution
 d'arme, couche réseau, boucle de simulation **et** client navigateur. Le
@@ -69,14 +70,17 @@ prototype jouable de bout en bout est fonctionnel.
     │   ├── gameloop.ts      # Boucle de tick (IA mobs, dégâts, régénération)
     │   ├── combat.ts        # Logique pure combat & IA (Brique 6)
     │   ├── mobs.ts          # MobManager : portails, spawn, IA (Brique 6)
+    │   ├── movement.ts      # Déplacement autoritaire (prédiction, Brique 8)
     │   ├── gameloop.test.ts # Tests de la boucle de jeu
     │   ├── combat.test.ts   # Tests IA de suivi + calcul des dégâts
+    │   ├── movement.test.ts # Tests validation de vitesse / anti-triche
     │   └── index.ts         # Démarrage persistance + WebSocket + game loop
     └── client/              # Frontend navigateur (Brique 5, build Vite)
         ├── index.html       # Écran d'accueil + structure du HUD/jeu
         ├── style.css        # Thème et mise en page
         ├── protocol.ts      # Miroir client du contrat réseau (wire format)
-        ├── main.ts          # Connexion WS, HUD, rendu canvas, déplacements
+        ├── movement.ts      # Prédiction client (copie de server/movement)
+        ├── main.ts          # Connexion WS, HUD, rendu canvas, prédiction
         └── tsconfig.json    # Config TS du client (lib DOM, bundler)
 ```
 
@@ -323,7 +327,7 @@ WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage
 | `type` | Charge utile | Action serveur | Validation |
 | --- | --- | --- | --- |
 | `CONNECT` | `{ pseudo: string }` | Charge le `Player` par pseudo ou le **crée** (avec une arme de départ équipée), lie la session, renvoie `PLAYER_STATE` + diffuse `WORLD_UPDATE` | `pseudo` non vide |
-| `MOVE` | `{ x: number, y: number }` | Valide puis met à jour la position autoritaire, persiste, renvoie `PLAYER_STATE` + `WORLD_UPDATE` | distance ≤ `MAX_MOVE_DISTANCE` (50) ; sinon rejet anti-téléportation |
+| `MOVE` | `{ sequenceNumber, dirX, dirY, deltaMs }` | Déplacement fluide : `applyMove` recalcule la position autoritaire (direction normalisée, Δt borné), persiste, renvoie `PLAYER_STATE` + `WORLD_UPDATE` (Brique 8) | vitesse ≤ `PLAYER_SPEED` par construction (triche neutralisée) |
 | `GAIN_XP_DEBUG` | `{ amount: number }` | **(debug)** Applique `gainXp` à l'arme du Slot_Principal, persiste, renvoie `PLAYER_STATE` | session connectée + arme équipée ; `amount ≥ 0` |
 | `ATTACK_MOB` | `{ mobId: string }` | Attaque un monstre : valide la portée selon l'arme, inflige les dégâts, accorde l'XP si kill, renvoie `PLAYER_STATE` + `WORLD_UPDATE` (Brique 6) | session connectée + arme + mob existant + distance ≤ portée |
 
@@ -331,7 +335,7 @@ WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage
 
 | `type` | Charge utile | Quand |
 | --- | --- | --- |
-| `PLAYER_STATE` | `{ player, stats, weapons }` | Après CONNECT / MOVE / GAIN_XP_DEBUG / ATTACK_MOB (état + stats agrégées + armes équipées) |
+| `PLAYER_STATE` | `{ player, stats, weapons, lastProcessedSequence }` | Après CONNECT / MOVE / GAIN_XP_DEBUG / ATTACK_MOB (état + stats + armes + dernière séquence MOVE traitée pour la réconciliation) |
 | `WORLD_UPDATE` | `{ players: PublicPlayer[], portals: PublicPortal[], monsters: PublicMonster[] }` | Diffusion à tous : joueurs, portails et monstres (CONNECT, MOVE, ATTACK_MOB, chaque tick d'IA, déconnexion) |
 | `ERROR` | `{ code: ErrorCode, message: string }` | Intention invalide / JSON malformé / état incohérent |
 
@@ -495,10 +499,8 @@ framework : DOM + Canvas 2D, pour rester lisible et léger.
   (carrés rouges + barre de PV) via `WORLD_UPDATE`.
 - **Combat** : cliquer sur un monstre proche envoie `ATTACK_MOB` (le serveur
   valide la portée selon l'arme principale).
-- **Déplacement** : clic sur la carte (hors monstre) **ou** flèches / ZQSD / WASD → envoie
-  l'intention `MOVE`. Le client borne le déplacement à `MAX_MOVE_DISTANCE`
-  pour rester accepté ; un `MOVE` aberrant rejeté par le serveur renvoie l'état
-  officiel (snap-back) — l'autorité reste serveur.
+- **Déplacement fluide** : flèches / ZQSD / WASD → boucle 60 FPS avec
+  **prédiction locale** + réconciliation (cf. §12). L'autorité reste serveur.
 - **Bouton debug « Gagner de l'XP »** : envoie `GAIN_XP_DEBUG` et l'on voit
   l'arme évoluer en direct (niveau, XP, nouveaux affixes/sorts).
 
@@ -513,7 +515,66 @@ Build de production : `npm run build:client` (sortie dans `dist/client/`).
 Validé bout-en-bout via un test navigateur headless (Chromium) : connexion →
 HUD rempli → `GAIN_XP_DEBUG` → montée de l'arme au niveau 2 rendue à l'écran.
 
-## 12. Conventions techniques
+## 12. Déplacements fluides — Prédiction & Réconciliation (Brique 8)
+
+Élimine le déplacement « case par case » au profit d'un mouvement fluide basé
+sur le temps, tout en restant **autoritaire serveur**. La même logique pure est
+appliquée des deux côtés : [`server/movement.ts`](src/server/movement.ts) et sa
+copie identique [`client/movement.ts`](src/client/movement.ts).
+
+### 12.1 Modèle de déplacement
+
+Un input de MOVE porte `{ sequenceNumber, dirX, dirY, deltaMs }`. La position
+résultante est :
+
+```
+applyMove(pos, input) :
+  Δt   = clamp(deltaMs, 0..MAX_INPUT_DELTA_MS) / 1000   # borne anti-téléport
+  dir  = normalize(dirX, dirY)                          # borne anti-vitesse
+  pos' = clampToWorld(pos + dir × PLAYER_SPEED × Δt)
+```
+
+Constantes : `PLAYER_SPEED = 120` cases/s, `MAX_INPUT_DELTA_MS = 250`,
+`WORLD_SIZE = 500`. **La règle d'or** : `MaxDistance = PLAYER_SPEED × Δt`.
+Comme le serveur **normalise la direction** et **borne le Δt**, un client ne
+peut jamais dépasser cette vitesse, quel que soit le vecteur ou le Δt envoyé →
+téléportation et speed-hack neutralisés *par construction*. La fonction
+`isMoveWithinLimit(from, to, Δt)` exprime la même règle sous forme de prédicat
+(utile pour valider un déplacement déjà calculé).
+
+### 12.2 Client prédictif (60 FPS)
+
+À chaque frame (`requestAnimationFrame`) :
+1. lecture des touches tenues → vecteur de direction ;
+2. si mouvement : création d'un input (`++sequenceNumber`, `deltaMs` = durée de
+   la frame), **prédiction locale immédiate** via `applyMove` (le carré bouge
+   sans attendre le serveur), ajout à `pendingInputs`, envoi du `MOVE` ;
+3. rendu du joueur à la position **prédite**.
+
+### 12.3 Réconciliation
+
+À réception d'un `PLAYER_STATE` (`{ player.position, lastProcessedSequence }`) :
+1. on écarte de `pendingInputs` tous les inputs `≤ lastProcessedSequence`
+   (confirmés) ;
+2. on repart de la position **autoritaire** du serveur et l'on **rejoue** les
+   inputs encore en attente (`applyMove` successifs) → position réconciliée ;
+3. si l'écart avec la prédiction courante dépasse un seuil (serveur ayant
+   corrigé la trajectoire), on applique le **correctif** (snap). Sinon le rendu
+   reste fluide.
+
+Comme client et serveur exécutent exactement le même `applyMove`, en régime
+normal le rejeu reproduit la prédiction (drift ≈ 0) : aucun à-coup visible.
+
+### 12.4 Tests
+
+[`movement.test.ts`](src/server/movement.test.ts) : `maxDistanceFor`, input
+conforme, normalisation diagonale, **rejet de la triche** par vecteur géant et
+par Δt géant, direction nulle, bornage monde, et le prédicat
+`isMoveWithinLimit` (accepte conforme, rejette téléport/excès). Côté hub,
+[`gameHub.test.ts`](src/network/gameHub.test.ts) vérifie le renvoi de
+`lastProcessedSequence` et le bornage d'un MOVE triché.
+
+## 13. Conventions techniques
 
 - **TypeScript strict** (`strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`) — voir [`tsconfig.json`](tsconfig.json).
@@ -524,7 +585,7 @@ HUD rempli → `GAIN_XP_DEBUG` → montée de l'arme au niveau 2 rendue à l'éc
 - Les **fabriques** (`createPlayer`, `createWeapon`) centralisent les valeurs
   par défaut pour garantir des entités cohérentes.
 
-## 13. Scripts npm
+## 14. Scripts npm
 
 | Script | Action |
 | --- | --- |

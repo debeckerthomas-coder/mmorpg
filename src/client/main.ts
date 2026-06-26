@@ -12,12 +12,13 @@ import {
   type WeaponView,
   type WorldUpdateMessage,
 } from "./protocol";
+import { applyMove, type MoveInput, type Point } from "./movement";
 
 // --- Constantes monde / rendu (miroir du serveur) ---
 const WS_URL = `ws://${location.hostname || "localhost"}:8080`;
 const WORLD_SIZE = 500; // unités logiques de la zone
-const MAX_MOVE_DISTANCE = 50; // doit refléter le serveur (anti-téléportation)
-const KEY_STEP = 16; // pas de déplacement au clavier
+/** Seuil de déviation (cases) au-delà duquel on « snap » sur le serveur. */
+const RECONCILE_SNAP_THRESHOLD = 0.01;
 
 // --- Helpers DOM ---
 const el = <T extends HTMLElement>(id: string): T => {
@@ -45,6 +46,18 @@ let weapons: PlayerStateMessage["weapons"] | null = null;
 let others: WorldUpdateMessage["players"] = [];
 let portals: PublicPortal[] = [];
 let monsters: PublicMonster[] = [];
+
+// --- Prédiction & réconciliation ---
+/** Position prédite localement (rendue à 60 FPS, avant confirmation serveur). */
+let predicted: Point | null = null;
+/** Compteur de séquence des inputs envoyés. */
+let inputSeq = 0;
+/** Inputs envoyés mais pas encore confirmés par le serveur. */
+let pendingInputs: MoveInput[] = [];
+/** Touches actuellement enfoncées. */
+const heldKeys = new Set<string>();
+let lastFrameTime = 0;
+let loopStarted = false;
 
 /** Couleur de rendu d'un portail selon son rang. */
 const RANK_COLOR: Record<PortalRank, string> = {
@@ -105,19 +118,47 @@ const handleServerMessage = (msg: ServerMessage): void => {
       me = msg.player;
       stats = msg.stats;
       weapons = msg.weapons;
+      reconcile(msg.player.position, msg.lastProcessedSequence);
       enterGame();
+      startLoop();
       renderHud();
-      renderWorld();
       break;
     case ServerMessageType.WorldUpdate:
       others = msg.players;
       portals = msg.portals;
       monsters = msg.monsters;
-      renderWorld();
       break;
     case ServerMessageType.Error:
       flashLog(`⚠️ ${msg.code} — ${msg.message}`);
       break;
+  }
+};
+
+/**
+ * Réconciliation : on repart de la position **autoritaire** du serveur, on
+ * écarte les inputs déjà traités, puis on **rejoue** les inputs encore en
+ * attente pour retrouver une prédiction cohérente. Si l'écart avec la
+ * prédiction courante est négligeable, on garde le rendu fluide.
+ */
+const reconcile = (serverPos: Point, lastProcessed: number): void => {
+  pendingInputs = pendingInputs.filter(
+    (i) => i.sequenceNumber > lastProcessed,
+  );
+
+  let authoritative: Point = { x: serverPos.x, y: serverPos.y };
+  for (const input of pendingInputs) {
+    authoritative = applyMove(authoritative, input);
+  }
+
+  if (!predicted) {
+    predicted = authoritative;
+    return;
+  }
+  const drift = Math.hypot(predicted.x - authoritative.x, predicted.y - authoritative.y);
+  if (drift > RECONCILE_SNAP_THRESHOLD) {
+    // Le serveur a corrigé notre trajectoire (rejet d'un mouvement triché,
+    // collision, etc.) → on applique le correctif.
+    predicted = authoritative;
   }
 };
 
@@ -277,9 +318,10 @@ const renderWorld = (): void => {
     drawEntity(p.position.x, p.position.y, "#5b6478", p.pseudo);
   }
 
-  // Soi-même
+  // Soi-même : on rend la position PRÉDITE (fluide), pas la dernière reçue.
   if (me) {
-    drawEntity(me.position.x, me.position.y, "#7c5cff", me.pseudo, true);
+    const self = predicted ?? me.position;
+    drawEntity(self.x, self.y, "#7c5cff", me.pseudo, true);
   }
 };
 
@@ -307,32 +349,8 @@ const drawEntity = (
 };
 
 // ---------------------------------------------------------------------------
-// Déplacements (intentions MOVE)
+// Combat : clic sur un monstre proche
 // ---------------------------------------------------------------------------
-
-const clampToWorld = (v: number): number =>
-  Math.max(0, Math.min(WORLD_SIZE, v));
-
-/** Limite un déplacement à MAX_MOVE_DISTANCE depuis la position courante. */
-const moveTowards = (targetX: number, targetY: number): void => {
-  if (!me) return;
-  const dx = targetX - me.position.x;
-  const dy = targetY - me.position.y;
-  const dist = Math.hypot(dx, dy);
-
-  let x = targetX;
-  let y = targetY;
-  if (dist > MAX_MOVE_DISTANCE) {
-    const k = (MAX_MOVE_DISTANCE - 1) / dist; // marge pour rester accepté
-    x = me.position.x + dx * k;
-    y = me.position.y + dy * k;
-  }
-  send({
-    type: ClientMessageType.Move,
-    x: clampToWorld(x),
-    y: clampToWorld(y),
-  });
-};
 
 /** Rayon (en pixels) pour considérer qu'un clic vise un monstre. */
 const MOB_CLICK_RADIUS = 14;
@@ -342,11 +360,13 @@ canvas.addEventListener("click", (e) => {
   const px = ((e.clientX - rect.left) / rect.width) * canvas.width;
   const py = ((e.clientY - rect.top) / rect.height) * canvas.height;
 
-  // Clic sur un monstre proche → intention d'attaque (portée validée serveur).
   let nearest: PublicMonster | null = null;
   let nearestDist = MOB_CLICK_RADIUS;
   for (const mob of monsters) {
-    const d = Math.hypot(worldToCanvas(mob.position.x) - px, worldToCanvas(mob.position.y) - py);
+    const d = Math.hypot(
+      worldToCanvas(mob.position.x) - px,
+      worldToCanvas(mob.position.y) - py,
+    );
     if (d <= nearestDist) {
       nearestDist = d;
       nearest = mob;
@@ -354,42 +374,74 @@ canvas.addEventListener("click", (e) => {
   }
   if (nearest) {
     send({ type: ClientMessageType.AttackMob, mobId: nearest.id });
-    return;
   }
-
-  // Sinon : déplacement vers le point cliqué.
-  moveTowards(px / scale, py / scale);
 });
+
+// ---------------------------------------------------------------------------
+// Déplacement prédictif (ZQSD / WASD / flèches) — boucle 60 FPS
+// ---------------------------------------------------------------------------
+
+const MOVE_KEYS = new Set([
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+  "w", "a", "s", "d", "z", "q",
+]);
 
 window.addEventListener("keydown", (e) => {
-  if (!me || gameScreen.hidden) return;
-  let dx = 0;
-  let dy = 0;
-  switch (e.key) {
-    case "ArrowUp":
-    case "w":
-    case "z":
-      dy = -KEY_STEP;
-      break;
-    case "ArrowDown":
-    case "s":
-      dy = KEY_STEP;
-      break;
-    case "ArrowLeft":
-    case "a":
-    case "q":
-      dx = -KEY_STEP;
-      break;
-    case "ArrowRight":
-    case "d":
-      dx = KEY_STEP;
-      break;
-    default:
-      return;
+  if (MOVE_KEYS.has(e.key)) {
+    heldKeys.add(e.key);
+    if (!gameScreen.hidden) e.preventDefault();
   }
-  e.preventDefault();
-  moveTowards(me.position.x + dx, me.position.y + dy);
 });
+window.addEventListener("keyup", (e) => heldKeys.delete(e.key));
+// Sécurité : si la fenêtre perd le focus, on relâche tout.
+window.addEventListener("blur", () => heldKeys.clear());
+
+/** Vecteur de direction (normalisé plus tard par le serveur) issu des touches. */
+const directionFromKeys = (): { x: number; y: number } => {
+  let x = 0;
+  let y = 0;
+  if (heldKeys.has("ArrowUp") || heldKeys.has("w") || heldKeys.has("z")) y -= 1;
+  if (heldKeys.has("ArrowDown") || heldKeys.has("s")) y += 1;
+  if (heldKeys.has("ArrowLeft") || heldKeys.has("a") || heldKeys.has("q")) x -= 1;
+  if (heldKeys.has("ArrowRight") || heldKeys.has("d")) x += 1;
+  return { x, y };
+};
+
+/** Démarre la boucle de rendu/prédiction (idempotent). */
+const startLoop = (): void => {
+  if (loopStarted) return;
+  loopStarted = true;
+  lastFrameTime = performance.now();
+  requestAnimationFrame(frame);
+};
+
+const frame = (now: number): void => {
+  const deltaMs = now - lastFrameTime;
+  lastFrameTime = now;
+
+  if (me) {
+    const dir = directionFromKeys();
+    const base: Point = predicted ?? me.position;
+
+    if (dir.x !== 0 || dir.y !== 0) {
+      const input: MoveInput = {
+        sequenceNumber: ++inputSeq,
+        dirX: dir.x,
+        dirY: dir.y,
+        deltaMs,
+      };
+      // 1) Prédiction locale immédiate (mouvement fluide, sans attendre le serveur).
+      predicted = applyMove(base, input);
+      // 2) On conserve l'input en attente de confirmation (pour le rejeu).
+      pendingInputs.push(input);
+      // 3) On envoie l'intention au serveur autoritaire.
+      send({ type: ClientMessageType.Move, ...input });
+    }
+    renderWorld();
+  }
+
+  requestAnimationFrame(frame);
+};
 
 // ---------------------------------------------------------------------------
 // Interactions UI
