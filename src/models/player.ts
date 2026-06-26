@@ -45,4 +45,9 @@ export interface Player {
   pvActuels: number;
   position: Position;
   equipment: Equipment;
+  /**
+   * Inventaire de matériaux (Brique 9) : quantité possédée par type de
+   * matériau (clé = `MaterialType`). Vide par défaut.
+   */
+  materials: Record<string, number>;
 }

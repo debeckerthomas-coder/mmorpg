@@ -1,7 +1,8 @@
 import { newId } from "../models/ids.js";
 import type { PlayerId } from "../models/ids.js";
+import type { LootDrop } from "../models/materials.js";
 import type { Monster } from "../models/monsters.js";
-import { type Portal, PortalRank } from "../models/portals.js";
+import { type Portal, type Point2D, PortalRank } from "../models/portals.js";
 import {
   ATTACK_RANGE,
   DETECTION_RADIUS,
@@ -11,6 +12,7 @@ import {
   stepToward,
   type PlayerPosition,
 } from "./combat.js";
+import { rollLootAmount, rollLootMaterial } from "./materials.js";
 
 export type Rng = () => number;
 
@@ -66,6 +68,7 @@ export interface MobDamageEvent {
 export class MobManager {
   private readonly portals = new Map<string, Portal>();
   private readonly monsters = new Map<string, Monster>();
+  private readonly loots = new Map<string, LootDrop>();
   /** Horloge interne (ms) pour les cooldowns d'attaque. */
   private clockMs = 0;
   private readonly lastAttackAt = new Map<string, number>();
@@ -82,6 +85,35 @@ export class MobManager {
 
   getMonster(id: string): Monster | undefined {
     return this.monsters.get(id);
+  }
+
+  // --- Loots au sol (Brique 9) ---
+
+  getLoots(): LootDrop[] {
+    return [...this.loots.values()];
+  }
+
+  getLoot(id: string): LootDrop | undefined {
+    return this.loots.get(id);
+  }
+
+  /** Fait apparaître un matériau au sol (type & quantité aléatoires). */
+  dropLoot(position: Point2D, rng: Rng = Math.random): LootDrop {
+    const loot: LootDrop = {
+      id: newId(),
+      materialType: rollLootMaterial(rng),
+      amount: rollLootAmount(rng),
+      position: { x: position.x, y: position.y },
+    };
+    this.loots.set(loot.id, loot);
+    return loot;
+  }
+
+  /** Retire un loot du sol (ramassé). Renvoie le loot retiré, ou undefined. */
+  removeLoot(id: string): LootDrop | undefined {
+    const loot = this.loots.get(id);
+    if (loot) this.loots.delete(id);
+    return loot;
   }
 
   /**

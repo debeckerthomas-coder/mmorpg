@@ -13,6 +13,12 @@ import {
 } from "../server/combat.js";
 import { applyMove, type MoveInput } from "../server/movement.js";
 import {
+  addMaterials,
+  infuseWeapon,
+  isWithinPickupRange,
+} from "../server/materials.js";
+import { MaterialType, isMaterialType } from "../models/materials.js";
+import {
   ClientMessageType,
   ErrorCode,
   ServerMessageType,
@@ -20,6 +26,7 @@ import {
   type ClientMessage,
   type EquippedWeapons,
   type MoveMessage,
+  type PublicLoot,
   type PublicMonster,
   type PublicPlayer,
   type PublicPortal,
@@ -129,6 +136,10 @@ export class GameHub {
         return this.onGainXpDebug(session, message.amount);
       case ClientMessageType.AttackMob:
         return this.onAttackMob(session, message.mobId);
+      case ClientMessageType.PickupLoot:
+        return this.onPickupLoot(session, message.lootId);
+      case ClientMessageType.InfuseWeapon:
+        return this.onInfuseWeapon(session, message.materialType);
     }
   }
 
@@ -252,11 +263,96 @@ export class GameHub {
       // Le monstre meurt : l'arme principale gagne son XP (et peut monter).
       gainXp(weapon, mob.xpDonnee);
       await this.persistence.weapons.save(weapon);
+      // ... et lâche un matériau au sol (Brique 9).
+      this.mobManager.dropLoot(mob.position);
     }
 
     // Renvoie l'état frais (recalcule les stats post-évolution éventuelle).
     await this.sendPlayerState(session, player);
     await this.broadcastWorld();
+  }
+
+  /**
+   * Ramassage d'un loot : le serveur valide la portée (mêlée), ajoute le
+   * matériau à l'inventaire du joueur et retire le loot du sol.
+   */
+  private async onPickupLoot(session: Session, lootId: string): Promise<void> {
+    const player = await this.requirePlayer(session);
+    if (!player) return;
+
+    const loot = this.mobManager.getLoot(lootId);
+    if (!loot) {
+      session.send({
+        type: ServerMessageType.Error,
+        code: ErrorCode.LootNotFound,
+        message: "Loot introuvable (déjà ramassé ?)",
+      });
+      return;
+    }
+
+    if (!isWithinPickupRange(player.position, loot.position)) {
+      session.send({
+        type: ServerMessageType.Error,
+        code: ErrorCode.OutOfRange,
+        message: "Loot hors de portée",
+      });
+      return;
+    }
+
+    addMaterials(player, loot.materialType, loot.amount);
+    this.mobManager.removeLoot(lootId);
+    await this.persistence.players.save(player);
+
+    await this.sendPlayerState(session, player);
+    await this.broadcastWorld();
+  }
+
+  /**
+   * Infusion d'arme : consomme les matériaux requis (50 griffes → affixe,
+   * 20 cailloux → sort) et applique le jet à l'arme principale.
+   */
+  private async onInfuseWeapon(
+    session: Session,
+    materialType: string,
+  ): Promise<void> {
+    const player = await this.requirePlayer(session);
+    if (!player) return;
+
+    if (!isMaterialType(materialType)) {
+      session.send({
+        type: ServerMessageType.Error,
+        code: ErrorCode.UnknownMaterial,
+        message: `Matériau inconnu: ${materialType}`,
+      });
+      return;
+    }
+
+    const weaponId = player.equipment.slotPrincipal;
+    const weapon = weaponId
+      ? await this.persistence.weapons.get(weaponId)
+      : undefined;
+    if (!weapon) {
+      session.send({
+        type: ServerMessageType.Error,
+        code: ErrorCode.NoWeaponEquipped,
+        message: "Aucune arme équipée à infuser",
+      });
+      return;
+    }
+
+    const result = infuseWeapon(player, weapon, materialType as MaterialType);
+    if (!result.ok) {
+      session.send({
+        type: ServerMessageType.Error,
+        code: ErrorCode.NotEnoughMaterials,
+        message: result.reason,
+      });
+      return;
+    }
+
+    await this.persistence.weapons.save(weapon);
+    await this.persistence.players.save(player);
+    await this.sendPlayerState(session, player);
   }
 
   // -------------------------------------------------------------------------
@@ -374,11 +470,19 @@ export class GameHub {
       position: m.position,
     }));
 
+    const loots: PublicLoot[] = this.mobManager.getLoots().map((l) => ({
+      id: l.id,
+      materialType: l.materialType,
+      amount: l.amount,
+      position: l.position,
+    }));
+
     const message: ServerMessage = {
       type: ServerMessageType.WorldUpdate,
       players,
       portals,
       monsters,
+      loots,
     };
     for (const session of this.sessions.values()) {
       session.send(message);

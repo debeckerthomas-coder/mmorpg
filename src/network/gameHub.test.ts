@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createMemoryPersistence } from "../persistence/memoryStore.js";
+import { MaterialType } from "../models/materials.js";
 import { PLAYER_SPEED, maxDistanceFor } from "../server/movement.js";
 import { GameHub } from "./gameHub.js";
 import {
@@ -188,4 +189,89 @@ test("la déconnexion retire la session du hub", async () => {
 
   await hub.unregister(session);
   assert.equal(hub.connectionCount, 0);
+});
+
+test("PICKUP_LOOT à portée ajoute le matériau et retire le loot", async () => {
+  const { hub, session, sent, persistence } = setup();
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.Connect, pseudo: "Alice" }),
+  );
+
+  // Loot déposé à la position du joueur (spawn 0,0) → à portée.
+  const loot = hub.mobs.dropLoot({ x: 0, y: 0 });
+
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.PickupLoot, lootId: loot.id }),
+  );
+
+  const state = lastOfType(sent, ServerMessageType.PlayerState);
+  assert.equal(state?.player.materials[loot.materialType], loot.amount);
+  assert.equal(hub.mobs.getLoot(loot.id), undefined);
+
+  const persisted = await persistence.players.get(session.playerId!);
+  assert.equal(persisted?.materials[loot.materialType], loot.amount);
+});
+
+test("PICKUP_LOOT hors de portée renvoie OUT_OF_RANGE", async () => {
+  const { hub, session, sent } = setup();
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.Connect, pseudo: "Alice" }),
+  );
+
+  const loot = hub.mobs.dropLoot({ x: 300, y: 300 }); // loin du spawn
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.PickupLoot, lootId: loot.id }),
+  );
+
+  const error = lastOfType(sent, ServerMessageType.Error);
+  assert.equal(error?.code, ErrorCode.OutOfRange);
+  assert.ok(hub.mobs.getLoot(loot.id), "le loot reste au sol");
+});
+
+test("INFUSE_WEAPON consomme les matériaux et ajoute un affixe", async () => {
+  const { hub, session, sent, persistence } = setup();
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.Connect, pseudo: "Alice" }),
+  );
+
+  // On dote le joueur de 50 griffes.
+  const player = await persistence.players.get(session.playerId!);
+  player!.materials = { [MaterialType.GriffeChauveSouris]: 50 };
+  await persistence.players.save(player!);
+
+  await hub.handleRaw(
+    session,
+    json({
+      type: ClientMessageType.InfuseWeapon,
+      materialType: MaterialType.GriffeChauveSouris,
+    }),
+  );
+
+  const state = lastOfType(sent, ServerMessageType.PlayerState);
+  assert.equal(state?.player.materials[MaterialType.GriffeChauveSouris], 0);
+  assert.equal(state?.weapons.slotPrincipal?.affixes.length, 1);
+});
+
+test("INFUSE_WEAPON sans matériaux renvoie NOT_ENOUGH_MATERIALS", async () => {
+  const { hub, session, sent } = setup();
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.Connect, pseudo: "Alice" }),
+  );
+
+  await hub.handleRaw(
+    session,
+    json({
+      type: ClientMessageType.InfuseWeapon,
+      materialType: MaterialType.GriffeChauveSouris,
+    }),
+  );
+
+  const error = lastOfType(sent, ServerMessageType.Error);
+  assert.equal(error?.code, ErrorCode.NotEnoughMaterials);
 });

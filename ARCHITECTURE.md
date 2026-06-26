@@ -27,6 +27,7 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | **6. Bestiaire & Portails (Solo Leveling)** | ✅ Fait | Portails (rangs C/B/A/S), monstres, IA de poursuite, combat joueur↔mob, gain d'XP au kill, rendu client, tests |
 | **7. Persistance SQL (SQLite)** | ✅ Fait | `SqlitePersistence` (better-sqlite3), schéma relationnel, jointures affixes/sorts, transactions, défaut serveur, tests round-trip |
 | **8. Déplacements fluides (prédiction réseau)** | ✅ Fait | MOVE par direction + Δt + séquence, validation autoritaire à la vitesse max, prédiction client 60 FPS, `pendingInputs`, réconciliation/rejeu, tests |
+| **9. Matériaux & Infusion (Artisanat)** | ✅ Fait | Loots lâchés par les mobs, ramassage (portée), inventaire joueur, infusion d'arme (50 griffes → affixe, 20 cailloux → sort), persistance, tests |
 
 Les 5 briques de base sont en place : modèles de données, persistance, évolution
 d'arme, couche réseau, boucle de simulation **et** client navigateur. Le
@@ -49,6 +50,7 @@ prototype jouable de bout en bout est fonctionnel.
     │   ├── evolution.ts     # Weapon Evolution Engine (gainXp, loot, level up)
     │   ├── portals.ts       # Portal, PortalRank (Brique 6)
     │   ├── monsters.ts      # Monster (Brique 6)
+    │   ├── materials.ts     # MaterialType, LootDrop (Brique 9)
     │   ├── factory.ts       # Création d'entités avec valeurs par défaut
     │   ├── stats.test.ts    # Tests de la règle d'agrégation
     │   ├── evolution.test.ts# Tests du moteur d'évolution
@@ -69,11 +71,13 @@ prototype jouable de bout en bout est fonctionnel.
     ├── server/              # Serveur autoritaire (bootstrap + simulation)
     │   ├── gameloop.ts      # Boucle de tick (IA mobs, dégâts, régénération)
     │   ├── combat.ts        # Logique pure combat & IA (Brique 6)
-    │   ├── mobs.ts          # MobManager : portails, spawn, IA (Brique 6)
+    │   ├── mobs.ts          # MobManager : portails, spawn, IA, loots (B6/B9)
     │   ├── movement.ts      # Déplacement autoritaire (prédiction, Brique 8)
+    │   ├── materials.ts     # Loot & infusion : règles pures (Brique 9)
     │   ├── gameloop.test.ts # Tests de la boucle de jeu
     │   ├── combat.test.ts   # Tests IA de suivi + calcul des dégâts
     │   ├── movement.test.ts # Tests validation de vitesse / anti-triche
+    │   ├── materials.test.ts# Tests ramassage + infusion
     │   └── index.ts         # Démarrage persistance + WebSocket + game loop
     └── client/              # Frontend navigateur (Brique 5, build Vite)
         ├── index.html       # Écran d'accueil + structure du HUD/jeu
@@ -264,6 +268,7 @@ weapons(id PK, name, type, level, current_xp, next_level_xp, raw_stats[JSON])
                       name, required_type, unlock_level, cost, cooldown_ms)
 
 players(id PK, pseudo, pk, pv_base, pv_actuels, pos_x, pos_y, zone,
+        materials[JSON],                  -- inventaire de matériaux (Brique 9)
         slot_principal  FK→weapons ON DELETE SET NULL,
         slot_secondaire FK→weapons ON DELETE SET NULL)
 ```
@@ -329,19 +334,22 @@ WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage
 | `CONNECT` | `{ pseudo: string }` | Charge le `Player` par pseudo ou le **crée** (avec une arme de départ équipée), lie la session, renvoie `PLAYER_STATE` + diffuse `WORLD_UPDATE` | `pseudo` non vide |
 | `MOVE` | `{ sequenceNumber, dirX, dirY, deltaMs }` | Déplacement fluide : `applyMove` recalcule la position autoritaire (direction normalisée, Δt borné), persiste, renvoie `PLAYER_STATE` + `WORLD_UPDATE` (Brique 8) | vitesse ≤ `PLAYER_SPEED` par construction (triche neutralisée) |
 | `GAIN_XP_DEBUG` | `{ amount: number }` | **(debug)** Applique `gainXp` à l'arme du Slot_Principal, persiste, renvoie `PLAYER_STATE` | session connectée + arme équipée ; `amount ≥ 0` |
-| `ATTACK_MOB` | `{ mobId: string }` | Attaque un monstre : valide la portée selon l'arme, inflige les dégâts, accorde l'XP si kill, renvoie `PLAYER_STATE` + `WORLD_UPDATE` (Brique 6) | session connectée + arme + mob existant + distance ≤ portée |
+| `ATTACK_MOB` | `{ mobId: string }` | Attaque un monstre : valide la portée selon l'arme, inflige les dégâts, accorde l'XP **et lâche un loot** si kill, renvoie `PLAYER_STATE` + `WORLD_UPDATE` (Brique 6) | session connectée + arme + mob existant + distance ≤ portée |
+| `PICKUP_LOOT` | `{ lootId: string }` | Ramasse un matériau au sol : ajoute à l'inventaire, retire le loot (Brique 9) | session connectée + loot existant + distance ≤ `LOOT_PICKUP_RANGE` |
+| `INFUSE_WEAPON` | `{ materialType: string }` | Infuse l'arme principale : consomme les matériaux, applique un jet d'affixe/sort (Brique 9) | session connectée + arme + matériaux suffisants |
 
 ### 8.3 États / réponses — Serveur → Client (`ServerMessage`)
 
 | `type` | Charge utile | Quand |
 | --- | --- | --- |
-| `PLAYER_STATE` | `{ player, stats, weapons, lastProcessedSequence }` | Après CONNECT / MOVE / GAIN_XP_DEBUG / ATTACK_MOB (état + stats + armes + dernière séquence MOVE traitée pour la réconciliation) |
-| `WORLD_UPDATE` | `{ players: PublicPlayer[], portals: PublicPortal[], monsters: PublicMonster[] }` | Diffusion à tous : joueurs, portails et monstres (CONNECT, MOVE, ATTACK_MOB, chaque tick d'IA, déconnexion) |
+| `PLAYER_STATE` | `{ player, stats, weapons, lastProcessedSequence }` | Après CONNECT / MOVE / GAIN_XP_DEBUG / ATTACK_MOB / PICKUP_LOOT / INFUSE_WEAPON (le `player` porte aussi `materials`) |
+| `WORLD_UPDATE` | `{ players, portals, monsters, loots }` | Diffusion à tous : joueurs, portails, monstres **et loots au sol** (CONNECT, MOVE, ATTACK_MOB, PICKUP_LOOT, chaque tick d'IA, déconnexion) |
 | `ERROR` | `{ code: ErrorCode, message: string }` | Intention invalide / JSON malformé / état incohérent |
 
 **Codes d'erreur** (`ErrorCode`) : `MALFORMED_JSON`, `UNKNOWN_TYPE`,
 `INVALID_PAYLOAD`, `NOT_CONNECTED`, `INVALID_MOVE`, `NO_WEAPON_EQUIPPED`,
-`MOB_NOT_FOUND`, `OUT_OF_RANGE`.
+`MOB_NOT_FOUND`, `OUT_OF_RANGE`, `LOOT_NOT_FOUND`, `NOT_ENOUGH_MATERIALS`,
+`UNKNOWN_MATERIAL`.
 
 ### 8.4 Tests
 
@@ -574,7 +582,62 @@ par Δt géant, direction nulle, bornage monde, et le prédicat
 [`gameHub.test.ts`](src/network/gameHub.test.ts) vérifie le renvoi de
 `lastProcessedSequence` et le bornage d'un MOVE triché.
 
-## 13. Conventions techniques
+## 13. Artisanat & Catalyseurs — Matériaux & Infusion (Brique 9)
+
+Boucle de jeu « tuer → récolter → infuser » : les monstres lâchent des
+matériaux, le joueur les ramasse dans son inventaire, puis les consomme pour
+**infuser** son arme (jets d'affixes/sorts de la Brique 2).
+
+### 13.1 Modèles
+
+- `MaterialType` ([`materials.ts`](src/models/materials.ts)) :
+  `GRIFFE_CHAUVE_SOURIS`, `CAILLOU_BRILLANT`.
+- `LootDrop` : `{ id, materialType, amount, position }` — matériau au sol.
+- `Player.materials: Record<string, number>` — inventaire (persisté en JSON).
+
+### 13.2 Drop & ramassage
+
+- À la **mort d'un monstre** (`ATTACK_MOB` → kill), le `MobManager`
+  (`dropLoot`) crée un `LootDrop` à sa position : type 50/50, quantité aléatoire
+  **1 à 5** (`rollLootAmount` / `rollLootMaterial`). Les loots actifs sont
+  diffusés dans `WORLD_UPDATE`.
+- `PICKUP_LOOT { lootId }` : le serveur valide la **portée mêlée**
+  (`LOOT_PICKUP_RANGE = 2` cases, `isWithinPickupRange`), ajoute le matériau à
+  l'inventaire (`addMaterials`), retire le loot du sol et persiste.
+
+### 13.3 Infusion (recettes)
+
+`INFUSE_WEAPON { materialType }` consomme des matériaux et applique un jet sur
+l'arme du Slot_Principal (`INFUSION_RECIPES`) :
+
+| Matériau | Coût | Effet |
+| --- | --- | --- |
+| `GRIFFE_CHAUVE_SOURIS` | **50** | un **affixe** aléatoire (`rollAffix`) |
+| `CAILLOU_BRILLANT` | **20** | un **sort** aléatoire (`rollSpell`) |
+
+`infuseWeapon` ([`server/materials.ts`](src/server/materials.ts)) échoue **sans
+rien consommer** si les ressources sont insuffisantes (`NOT_ENOUGH_MATERIALS`).
+Les jets réutilisent le catalogue par type d'arme de la Brique 2 (`rollAffix` /
+`rollSpell` exportés depuis `evolution.ts`).
+
+### 13.4 Client
+
+Le canvas dessine les loots (petits losanges colorés : griffe doré, caillou
+cyan, avec la quantité). Un clic ramasse le loot proche (après priorité au
+combat). Le HUD affiche l'**inventaire** et deux boutons
+« Infuser (50 Griffes) » / « Infuser (20 Cailloux) » (désactivés tant que le
+coût n'est pas atteint) qui émettent `INFUSE_WEAPON`.
+
+### 13.5 Tests
+
+[`materials.test.ts`](src/server/materials.test.ts) : tirage du loot, portée de
+ramassage, incrément d'inventaire, gestion du `MobManager` (drop/get/remove),
+et infusion (consommation correcte, ajout d'affixe/sort, **échec si ressources
+insuffisantes**). Côté hub, [`gameHub.test.ts`](src/network/gameHub.test.ts)
+couvre les chemins `PICKUP_LOOT` (à portée / hors portée) et `INFUSE_WEAPON`
+(succès / matériaux insuffisants).
+
+## 14. Conventions techniques
 
 - **TypeScript strict** (`strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`) — voir [`tsconfig.json`](tsconfig.json).
@@ -585,7 +648,7 @@ par Δt géant, direction nulle, bornage monde, et le prédicat
 - Les **fabriques** (`createPlayer`, `createWeapon`) centralisent les valeurs
   par défaut pour garantir des entités cohérentes.
 
-## 14. Scripts npm
+## 15. Scripts npm
 
 | Script | Action |
 | --- | --- |

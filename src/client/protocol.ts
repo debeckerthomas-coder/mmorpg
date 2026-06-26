@@ -12,6 +12,14 @@ export const ClientMessageType = {
   Move: "MOVE",
   GainXpDebug: "GAIN_XP_DEBUG",
   AttackMob: "ATTACK_MOB",
+  PickupLoot: "PICKUP_LOOT",
+  InfuseWeapon: "INFUSE_WEAPON",
+} as const;
+
+/** Types de matériaux (Brique 9). */
+export const MaterialType = {
+  GriffeChauveSouris: "GRIFFE_CHAUVE_SOURIS",
+  CaillouBrillant: "CAILLOU_BRILLANT",
 } as const;
 
 /** Rangs de portail (couleurs de rendu côté client). */
@@ -66,6 +74,14 @@ export interface PlayerView {
   pvActuels: number;
   position: Position;
   equipment: { slotPrincipal: string | null; slotSecondaire: string | null };
+  materials: Record<string, number>;
+}
+
+export interface PublicLoot {
+  id: string;
+  materialType: string;
+  amount: number;
+  position: { x: number; y: number };
 }
 
 export interface AggregatedStatsView {
@@ -87,7 +103,9 @@ export type ClientMessage =
       deltaMs: number;
     }
   | { type: typeof ClientMessageType.GainXpDebug; amount: number }
-  | { type: typeof ClientMessageType.AttackMob; mobId: string };
+  | { type: typeof ClientMessageType.AttackMob; mobId: string }
+  | { type: typeof ClientMessageType.PickupLoot; lootId: string }
+  | { type: typeof ClientMessageType.InfuseWeapon; materialType: string };
 
 export interface PublicPortal {
   id: string;
@@ -122,6 +140,7 @@ export interface WorldUpdateMessage {
   players: { id: string; pseudo: string; position: Position }[];
   portals: PublicPortal[];
   monsters: PublicMonster[];
+  loots: PublicLoot[];
 }
 
 export interface ErrorMessage {

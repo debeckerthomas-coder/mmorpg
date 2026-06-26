@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS players (
   zone            TEXT NOT NULL,
   slot_principal  TEXT,                   -- FK nullable vers weapons(id)
   slot_secondaire TEXT,
+  materials       TEXT NOT NULL DEFAULT '{}', -- JSON: inventaire de matériaux
   FOREIGN KEY (slot_principal)  REFERENCES weapons(id) ON DELETE SET NULL,
   FOREIGN KEY (slot_secondaire) REFERENCES weapons(id) ON DELETE SET NULL
 );
@@ -99,7 +100,18 @@ export const initDatabase = (path: string): Db => {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+};
+
+/** Migrations légères pour les bases créées avant l'ajout d'une colonne. */
+const migrate = (db: Db): void => {
+  const columns = db.prepare("PRAGMA table_info(players)").all() as {
+    name: string;
+  }[];
+  if (!columns.some((c) => c.name === "materials")) {
+    db.exec("ALTER TABLE players ADD COLUMN materials TEXT NOT NULL DEFAULT '{}'");
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -144,6 +156,7 @@ interface PlayerRow {
   zone: string;
   slot_principal: string | null;
   slot_secondaire: string | null;
+  materials: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,14 +320,14 @@ export class SqlitePlayerRepository
     this.selectAll = db.prepare("SELECT * FROM players");
     this.upsert = db.prepare(
       `INSERT INTO players
-         (id, pseudo, pk, pv_base, pv_actuels, pos_x, pos_y, zone, slot_principal, slot_secondaire)
+         (id, pseudo, pk, pv_base, pv_actuels, pos_x, pos_y, zone, slot_principal, slot_secondaire, materials)
        VALUES
-         (@id, @pseudo, @pk, @pvBase, @pvActuels, @posX, @posY, @zone, @slotPrincipal, @slotSecondaire)
+         (@id, @pseudo, @pk, @pvBase, @pvActuels, @posX, @posY, @zone, @slotPrincipal, @slotSecondaire, @materials)
        ON CONFLICT(id) DO UPDATE SET
          pseudo = excluded.pseudo, pk = excluded.pk, pv_base = excluded.pv_base,
          pv_actuels = excluded.pv_actuels, pos_x = excluded.pos_x, pos_y = excluded.pos_y,
          zone = excluded.zone, slot_principal = excluded.slot_principal,
-         slot_secondaire = excluded.slot_secondaire`,
+         slot_secondaire = excluded.slot_secondaire, materials = excluded.materials`,
     );
     this.deleteOne = db.prepare("DELETE FROM players WHERE id = ?");
   }
@@ -335,6 +348,7 @@ export class SqlitePlayerRepository
           ? asWeaponId(row.slot_secondaire)
           : null,
       },
+      materials: JSON.parse(row.materials) as Record<string, number>,
     };
   }
 
@@ -359,6 +373,7 @@ export class SqlitePlayerRepository
       zone: player.position.zone,
       slotPrincipal: player.equipment.slotPrincipal,
       slotSecondaire: player.equipment.slotSecondaire,
+      materials: JSON.stringify(player.materials),
     });
   }
 

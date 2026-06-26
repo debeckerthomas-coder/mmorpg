@@ -261,6 +261,30 @@ const generateReward = (
   return { kind: "affix", level, rarity, affix };
 };
 
+/**
+ * Tire un affixe aléatoire pour une arme (rareté + pioche dans son catalogue).
+ * Réutilisé hors level-up, par exemple par l'infusion (Brique 9). N'attache
+ * PAS l'affixe : l'appelant décide.
+ */
+export const rollAffix = (weapon: Weapon, rng: Rng = Math.random): Affix => {
+  const rarity = rollRarity(rng);
+  return generateAffix(rarity, pick(WEAPON_CATALOG[weapon.type].affixes, rng));
+};
+
+/**
+ * Tire un sort aléatoire pour une arme (selon son type, débloqué à son niveau
+ * courant). Réutilisé par l'infusion (Brique 9). N'attache PAS le sort.
+ */
+export const rollSpell = (
+  weapon: Weapon,
+  rng: Rng = Math.random,
+): GeneratedSpell =>
+  generateSpell(
+    weapon.type,
+    weapon.progression.level,
+    pick(WEAPON_CATALOG[weapon.type].spells, rng),
+  );
+
 // ---------------------------------------------------------------------------
 // Point d'entrée : gainXp
 // ---------------------------------------------------------------------------

@@ -25,6 +25,8 @@ export const ClientMessageType = {
   Move: "MOVE",
   GainXpDebug: "GAIN_XP_DEBUG",
   AttackMob: "ATTACK_MOB",
+  PickupLoot: "PICKUP_LOOT",
+  InfuseWeapon: "INFUSE_WEAPON",
 } as const;
 
 export type ClientMessageType =
@@ -61,11 +63,25 @@ export interface AttackMobMessage {
   mobId: string;
 }
 
+/** Le joueur ramasse un loot au sol (validé en portée par le serveur). */
+export interface PickupLootMessage {
+  type: typeof ClientMessageType.PickupLoot;
+  lootId: string;
+}
+
+/** Le joueur infuse son arme avec un matériau (Brique 9). */
+export interface InfuseWeaponMessage {
+  type: typeof ClientMessageType.InfuseWeapon;
+  materialType: string;
+}
+
 export type ClientMessage =
   | ConnectMessage
   | MoveMessage
   | GainXpDebugMessage
-  | AttackMobMessage;
+  | AttackMobMessage
+  | PickupLootMessage
+  | InfuseWeaponMessage;
 
 // ---------------------------------------------------------------------------
 // États / réponses : Serveur -> Client
@@ -127,6 +143,14 @@ export interface PublicMonster {
   position: Point2D;
 }
 
+/** Vue publique d'un loot au sol (Brique 9). */
+export interface PublicLoot {
+  id: string;
+  materialType: string;
+  amount: number;
+  position: Point2D;
+}
+
 /**
  * Diffusion de l'état du monde : joueurs présents, portails ouverts et
  * monstres actifs (Brique 6).
@@ -136,6 +160,7 @@ export interface WorldUpdateMessage {
   players: PublicPlayer[];
   portals: PublicPortal[];
   monsters: PublicMonster[];
+  loots: PublicLoot[];
 }
 
 /** Erreur applicative (intention invalide, JSON malformé, etc.). */
@@ -159,6 +184,9 @@ export const ErrorCode = {
   NoWeaponEquipped: "NO_WEAPON_EQUIPPED",
   MobNotFound: "MOB_NOT_FOUND",
   OutOfRange: "OUT_OF_RANGE",
+  LootNotFound: "LOOT_NOT_FOUND",
+  NotEnoughMaterials: "NOT_ENOUGH_MATERIALS",
+  UnknownMaterial: "UNKNOWN_MATERIAL",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -263,6 +291,35 @@ export const parseClientMessage = (raw: string): ParseResult => {
       return {
         ok: true,
         message: { type: ClientMessageType.AttackMob, mobId: obj["mobId"] },
+      };
+    }
+    case ClientMessageType.PickupLoot: {
+      if (typeof obj["lootId"] !== "string" || obj["lootId"] === "") {
+        return {
+          ok: false,
+          code: ErrorCode.InvalidPayload,
+          reason: "PICKUP_LOOT requiert un 'lootId' non vide",
+        };
+      }
+      return {
+        ok: true,
+        message: { type: ClientMessageType.PickupLoot, lootId: obj["lootId"] },
+      };
+    }
+    case ClientMessageType.InfuseWeapon: {
+      if (typeof obj["materialType"] !== "string" || obj["materialType"] === "") {
+        return {
+          ok: false,
+          code: ErrorCode.InvalidPayload,
+          reason: "INFUSE_WEAPON requiert un 'materialType' non vide",
+        };
+      }
+      return {
+        ok: true,
+        message: {
+          type: ClientMessageType.InfuseWeapon,
+          materialType: obj["materialType"],
+        },
       };
     }
     default:

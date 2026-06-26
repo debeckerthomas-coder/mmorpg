@@ -32,6 +32,7 @@ export const createPlayer = (
     pvActuels: overrides.pvActuels ?? pvBase,
     position: overrides.position ?? { ...DEFAULT_SPAWN },
     equipment: overrides.equipment ?? emptyEquipment(),
+    materials: overrides.materials ?? {},
   };
 };
 

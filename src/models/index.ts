@@ -9,3 +9,4 @@ export * from "./factory.js";
 export * from "./evolution.js";
 export * from "./portals.js";
 export * from "./monsters.js";
+export * from "./materials.js";

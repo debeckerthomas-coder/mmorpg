@@ -6,11 +6,13 @@ import {
   type PlayerStateMessage,
   type PlayerView,
   type PortalRank,
+  type PublicLoot,
   type PublicMonster,
   type PublicPortal,
   type ServerMessage,
   type WeaponView,
   type WorldUpdateMessage,
+  MaterialType,
 } from "./protocol";
 import { applyMove, type MoveInput, type Point } from "./movement";
 
@@ -33,6 +35,8 @@ const pseudoInput = el<HTMLInputElement>("pseudo");
 const joinBtn = el<HTMLButtonElement>("join");
 const loginStatus = el("login-status");
 const gainXpBtn = el<HTMLButtonElement>("gain-xp");
+const infuseClawBtn = el<HTMLButtonElement>("infuse-claw");
+const infuseStoneBtn = el<HTMLButtonElement>("infuse-stone");
 const logEl = el("log");
 const canvas = el<HTMLCanvasElement>("map");
 const ctx = canvas.getContext("2d")!;
@@ -46,6 +50,17 @@ let weapons: PlayerStateMessage["weapons"] | null = null;
 let others: WorldUpdateMessage["players"] = [];
 let portals: PublicPortal[] = [];
 let monsters: PublicMonster[] = [];
+let loots: PublicLoot[] = [];
+
+/** Couleur de rendu d'un loot selon son matériau. */
+const MATERIAL_COLOR: Record<string, string> = {
+  [MaterialType.GriffeChauveSouris]: "#c9a227", // doré/brun (griffe)
+  [MaterialType.CaillouBrillant]: "#4fd2ff", // cyan brillant (caillou)
+};
+const MATERIAL_LABEL: Record<string, string> = {
+  [MaterialType.GriffeChauveSouris]: "Griffes",
+  [MaterialType.CaillouBrillant]: "Cailloux",
+};
 
 // --- Prédiction & réconciliation ---
 /** Position prédite localement (rendue à 60 FPS, avant confirmation serveur). */
@@ -127,6 +142,7 @@ const handleServerMessage = (msg: ServerMessage): void => {
       others = msg.players;
       portals = msg.portals;
       monsters = msg.monsters;
+      loots = msg.loots;
       break;
     case ServerMessageType.Error:
       flashLog(`⚠️ ${msg.code} — ${msg.message}`);
@@ -207,6 +223,15 @@ const renderHud = (): void => {
   el("agg-stats").innerHTML = `
     Force <b>${s["force"] ?? 0}</b> · Agilité <b>${s["agilite"] ?? 0}</b><br/>
     Bonus PV <b>${s["pvBonus"] ?? 0}</b> · PV max <b>${pvMax}</b>`;
+
+  // Inventaire de matériaux
+  const claws = me.materials[MaterialType.GriffeChauveSouris] ?? 0;
+  const stones = me.materials[MaterialType.CaillouBrillant] ?? 0;
+  el("materials").innerHTML = `
+    🦇 ${MATERIAL_LABEL[MaterialType.GriffeChauveSouris]} <b>${claws}</b><br/>
+    💎 ${MATERIAL_LABEL[MaterialType.CaillouBrillant]} <b>${stones}</b>`;
+  infuseClawBtn.disabled = claws < 50;
+  infuseStoneBtn.disabled = stones < 20;
 };
 
 const renderSlot = (
@@ -312,6 +337,23 @@ const renderWorld = (): void => {
     ctx.fillRect(cx - w / 2, cy - size, w * pct, 3);
   }
 
+  // Loots au sol (petits losanges colorés selon le matériau)
+  for (const loot of loots) {
+    const cx = worldToCanvas(loot.position.x);
+    const cy = worldToCanvas(loot.position.y);
+    const color = MATERIAL_COLOR[loot.materialType] ?? "#ffffff";
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = color;
+    ctx.fillRect(-5, -5, 10, 10);
+    ctx.restore();
+    ctx.fillStyle = color;
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(`×${loot.amount}`, cx, cy - 9);
+  }
+
   // Autres joueurs
   for (const p of others) {
     if (me && p.id === me.id) continue;
@@ -360,20 +402,39 @@ canvas.addEventListener("click", (e) => {
   const px = ((e.clientX - rect.left) / rect.width) * canvas.width;
   const py = ((e.clientY - rect.top) / rect.height) * canvas.height;
 
-  let nearest: PublicMonster | null = null;
-  let nearestDist = MOB_CLICK_RADIUS;
+  // 1) Priorité au combat : monstre proche → attaque.
+  let nearestMob: PublicMonster | null = null;
+  let mobDist = MOB_CLICK_RADIUS;
   for (const mob of monsters) {
     const d = Math.hypot(
       worldToCanvas(mob.position.x) - px,
       worldToCanvas(mob.position.y) - py,
     );
-    if (d <= nearestDist) {
-      nearestDist = d;
-      nearest = mob;
+    if (d <= mobDist) {
+      mobDist = d;
+      nearestMob = mob;
     }
   }
-  if (nearest) {
-    send({ type: ClientMessageType.AttackMob, mobId: nearest.id });
+  if (nearestMob) {
+    send({ type: ClientMessageType.AttackMob, mobId: nearestMob.id });
+    return;
+  }
+
+  // 2) Sinon : loot proche → ramassage (portée validée serveur).
+  let nearestLoot: PublicLoot | null = null;
+  let lootDist = MOB_CLICK_RADIUS;
+  for (const loot of loots) {
+    const d = Math.hypot(
+      worldToCanvas(loot.position.x) - px,
+      worldToCanvas(loot.position.y) - py,
+    );
+    if (d <= lootDist) {
+      lootDist = d;
+      nearestLoot = loot;
+    }
+  }
+  if (nearestLoot) {
+    send({ type: ClientMessageType.PickupLoot, lootId: nearestLoot.id });
   }
 });
 
@@ -463,4 +524,18 @@ pseudoInput.addEventListener("keydown", (e) => {
 
 gainXpBtn.addEventListener("click", () => {
   send({ type: ClientMessageType.GainXpDebug, amount: 50 });
+});
+
+infuseClawBtn.addEventListener("click", () => {
+  send({
+    type: ClientMessageType.InfuseWeapon,
+    materialType: MaterialType.GriffeChauveSouris,
+  });
+});
+
+infuseStoneBtn.addEventListener("click", () => {
+  send({
+    type: ClientMessageType.InfuseWeapon,
+    materialType: MaterialType.CaillouBrillant,
+  });
 });
