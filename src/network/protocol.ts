@@ -27,6 +27,7 @@ export const ClientMessageType = {
   AttackMob: "ATTACK_MOB",
   PickupLoot: "PICKUP_LOOT",
   InfuseWeapon: "INFUSE_WEAPON",
+  CastSpell: "CAST_SPELL",
 } as const;
 
 export type ClientMessageType =
@@ -75,13 +76,21 @@ export interface InfuseWeaponMessage {
   materialType: string;
 }
 
+/** Le joueur lance un sort actif (Brique 10). `targetMobId` optionnel. */
+export interface CastSpellMessage {
+  type: typeof ClientMessageType.CastSpell;
+  spellId: string;
+  targetMobId?: string;
+}
+
 export type ClientMessage =
   | ConnectMessage
   | MoveMessage
   | GainXpDebugMessage
   | AttackMobMessage
   | PickupLootMessage
-  | InfuseWeaponMessage;
+  | InfuseWeaponMessage
+  | CastSpellMessage;
 
 // ---------------------------------------------------------------------------
 // États / réponses : Serveur -> Client
@@ -187,6 +196,9 @@ export const ErrorCode = {
   LootNotFound: "LOOT_NOT_FOUND",
   NotEnoughMaterials: "NOT_ENOUGH_MATERIALS",
   UnknownMaterial: "UNKNOWN_MATERIAL",
+  SpellNotUsable: "SPELL_NOT_USABLE",
+  NotEnoughMana: "NOT_ENOUGH_MANA",
+  SpellOnCooldown: "SPELL_ON_COOLDOWN",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -319,6 +331,31 @@ export const parseClientMessage = (raw: string): ParseResult => {
         message: {
           type: ClientMessageType.InfuseWeapon,
           materialType: obj["materialType"],
+        },
+      };
+    }
+    case ClientMessageType.CastSpell: {
+      if (typeof obj["spellId"] !== "string" || obj["spellId"] === "") {
+        return {
+          ok: false,
+          code: ErrorCode.InvalidPayload,
+          reason: "CAST_SPELL requiert un 'spellId' non vide",
+        };
+      }
+      const targetMobId = obj["targetMobId"];
+      if (targetMobId !== undefined && typeof targetMobId !== "string") {
+        return {
+          ok: false,
+          code: ErrorCode.InvalidPayload,
+          reason: "CAST_SPELL: 'targetMobId' doit être une chaîne si fourni",
+        };
+      }
+      return {
+        ok: true,
+        message: {
+          type: ClientMessageType.CastSpell,
+          spellId: obj["spellId"],
+          ...(typeof targetMobId === "string" ? { targetMobId } : {}),
         },
       };
     }

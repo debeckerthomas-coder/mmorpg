@@ -20,6 +20,8 @@ export interface AggregatedStats {
   rawStats: RawStats;
   /** PV maximum = pvBase + pvBonus cumulé. */
   pvMax: number;
+  /** PM maximum = pmBase + pmBonus cumulé (Brique 10). */
+  pmMax: number;
   /** Affixes actifs (issus du slot principal seulement). */
   activeAffixes: Affix[];
   /** Sorts utilisables (slot principal + débloqués par le niveau). */
@@ -73,6 +75,7 @@ export const computeAggregatedStats = (
   }
 
   const pvMax = player.pvBase + (rawStats.pvBonus ?? 0);
+  const pmMax = player.pmBase + (rawStats.pmBonus ?? 0);
 
-  return { rawStats, pvMax, activeAffixes, usableSpells };
+  return { rawStats, pvMax, pmMax, activeAffixes, usableSpells };
 };

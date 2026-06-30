@@ -14,6 +14,7 @@ export const ClientMessageType = {
   AttackMob: "ATTACK_MOB",
   PickupLoot: "PICKUP_LOOT",
   InfuseWeapon: "INFUSE_WEAPON",
+  CastSpell: "CAST_SPELL",
 } as const;
 
 /** Types de matériaux (Brique 9). */
@@ -72,9 +73,12 @@ export interface PlayerView {
   pk: boolean;
   pvBase: number;
   pvActuels: number;
+  pmBase: number;
+  pmActuels: number;
   position: Position;
   equipment: { slotPrincipal: string | null; slotSecondaire: string | null };
   materials: Record<string, number>;
+  cooldownEndTimestamps: Record<string, number>;
 }
 
 export interface PublicLoot {
@@ -87,6 +91,7 @@ export interface PublicLoot {
 export interface AggregatedStatsView {
   rawStats: Record<string, number>;
   pvMax: number;
+  pmMax: number;
   activeAffixes: Affix[];
   usableSpells: Spell[];
 }
@@ -105,7 +110,12 @@ export type ClientMessage =
   | { type: typeof ClientMessageType.GainXpDebug; amount: number }
   | { type: typeof ClientMessageType.AttackMob; mobId: string }
   | { type: typeof ClientMessageType.PickupLoot; lootId: string }
-  | { type: typeof ClientMessageType.InfuseWeapon; materialType: string };
+  | { type: typeof ClientMessageType.InfuseWeapon; materialType: string }
+  | {
+      type: typeof ClientMessageType.CastSpell;
+      spellId: string;
+      targetMobId?: string;
+    };
 
 export interface PublicPortal {
   id: string;

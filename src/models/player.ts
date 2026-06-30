@@ -43,6 +43,9 @@ export interface Player {
   pk: boolean;
   pvBase: number;
   pvActuels: number;
+  /** Points de Mana (Brique 10) : socle et valeur courante. */
+  pmBase: number;
+  pmActuels: number;
   position: Position;
   equipment: Equipment;
   /**
@@ -50,4 +53,9 @@ export interface Player {
    * matériau (clé = `MaterialType`). Vide par défaut.
    */
   materials: Record<string, number>;
+  /**
+   * Cooldowns actifs des sorts (Brique 10) : pour chaque `spellId`, le
+   * timestamp (ms epoch) auquel le sort redevient lançable.
+   */
+  cooldownEndTimestamps: Record<string, number>;
 }

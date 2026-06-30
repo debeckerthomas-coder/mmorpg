@@ -167,6 +167,58 @@ button:disabled {
   transition: width 0.25s ease;
 }
 
+.pm-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2a6df4, #4fd2ff);
+  transition: width 0.25s ease;
+}
+
+.spells {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.spell-btn {
+  position: relative;
+  text-align: left;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+  font-weight: 600;
+  overflow: hidden;
+}
+
+.spell-btn .key {
+  display: inline-block;
+  min-width: 1.2em;
+  text-align: center;
+  background: #11131f;
+  border-radius: 4px;
+  margin-right: 0.4rem;
+  color: var(--accent-2);
+}
+
+.spell-btn .cost {
+  float: right;
+  color: #4fd2ff;
+  font-size: 0.75rem;
+}
+
+.spell-btn .cd-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 20, 0.78);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+}
+
 .slot {
   background: var(--panel-2);
   border-radius: 10px;

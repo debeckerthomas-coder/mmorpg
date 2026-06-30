@@ -28,6 +28,9 @@ export const TICK_INTERVAL_MS = 1000 / TICK_RATE;
 /** Fraction des PV max régénérée par seconde par défaut (5 %/s). */
 export const DEFAULT_REGEN_PER_SECOND = 0.05;
 
+/** Fraction du PM max régénérée par seconde par défaut (2 %/s, Brique 10). */
+export const DEFAULT_PM_REGEN_PER_SECOND = 0.02;
+
 /**
  * Fournisseur des participants du monde : qui est connecté et doit être simulé.
  * Implémenté par le `GameHub` de la Brique 3.
@@ -54,6 +57,8 @@ export interface GameLoopOptions {
   tickIntervalMs?: number;
   /** Régénération PV en fraction des PV max par seconde (défaut : 5 %/s). */
   regenPerSecond?: number;
+  /** Régénération PM en fraction du PM max par seconde (défaut : 2 %/s). */
+  pmRegenPerSecond?: number;
   /** Hook appelé après chaque tick (ex : diffusion d'état). */
   onTick?: (info: TickInfo) => void;
 }
@@ -64,6 +69,7 @@ export class GameLoop {
   private readonly mobManager: MobManager;
   private readonly tickIntervalMs: number;
   private readonly regenPerSecond: number;
+  private readonly pmRegenPerSecond: number;
   private readonly onTick: ((info: TickInfo) => void) | undefined;
 
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -77,6 +83,8 @@ export class GameLoop {
     this.mobManager = options.mobManager ?? new MobManager();
     this.tickIntervalMs = options.tickIntervalMs ?? TICK_INTERVAL_MS;
     this.regenPerSecond = options.regenPerSecond ?? DEFAULT_REGEN_PER_SECOND;
+    this.pmRegenPerSecond =
+      options.pmRegenPerSecond ?? DEFAULT_PM_REGEN_PER_SECOND;
     this.onTick = options.onTick;
   }
 
@@ -164,17 +172,29 @@ export class GameLoop {
       dirty.add(event.playerId);
     }
 
-    // 3) Régénération passive (uniquement les joueurs vivants sous leur max).
+    // 3) Régénération passive des PV et des PM (joueurs vivants).
     for (const [playerId, player] of entities) {
       if (player.pvActuels <= 0) continue;
       const stats = await this.aggregate(player);
-      if (player.pvActuels >= stats.pvMax) continue;
 
-      const regen = stats.pvMax * this.regenPerSecond * (deltaMs / 1000);
-      const next = Math.min(stats.pvMax, player.pvActuels + regen);
-      if (next !== player.pvActuels) {
-        player.pvActuels = next;
-        dirty.add(playerId);
+      // PV
+      if (player.pvActuels < stats.pvMax) {
+        const regen = stats.pvMax * this.regenPerSecond * (deltaMs / 1000);
+        const next = Math.min(stats.pvMax, player.pvActuels + regen);
+        if (next !== player.pvActuels) {
+          player.pvActuels = next;
+          dirty.add(playerId);
+        }
+      }
+
+      // PM (Brique 10)
+      if (player.pmActuels < stats.pmMax) {
+        const regen = stats.pmMax * this.pmRegenPerSecond * (deltaMs / 1000);
+        const next = Math.min(stats.pmMax, player.pmActuels + regen);
+        if (next !== player.pmActuels) {
+          player.pmActuels = next;
+          dirty.add(playerId);
+        }
       }
     }
 

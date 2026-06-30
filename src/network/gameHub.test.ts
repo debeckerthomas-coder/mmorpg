@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import { createMemoryPersistence } from "../persistence/memoryStore.js";
 import { MaterialType } from "../models/materials.js";
+import { asSpellId } from "../models/ids.js";
+import { WeaponType } from "../models/weapon.js";
 import { PLAYER_SPEED, maxDistanceFor } from "../server/movement.js";
 import { GameHub } from "./gameHub.js";
 import {
@@ -274,4 +276,76 @@ test("INFUSE_WEAPON sans matériaux renvoie NOT_ENOUGH_MATERIALS", async () => {
 
   const error = lastOfType(sent, ServerMessageType.Error);
   assert.equal(error?.code, ErrorCode.NotEnoughMaterials);
+});
+
+/** Ajoute un sort jouable à l'arme principale du joueur connecté. */
+const giveSpell = async (
+  hub: GameHub,
+  persistence: ReturnType<typeof createMemoryPersistence>,
+  playerId: string,
+  spellId: string,
+) => {
+  const player = await persistence.players.get(playerId as never);
+  const weapon = await persistence.weapons.get(
+    player!.equipment.slotPrincipal!,
+  );
+  weapon!.generatedSpells.push({
+    id: asSpellId(spellId),
+    name: "Frappe tournoyante",
+    requiredType: WeaponType.Epee,
+    unlockLevel: 1,
+    cost: 15,
+    cooldownMs: 3000,
+  });
+  await persistence.weapons.save(weapon!);
+};
+
+test("CAST_SPELL inflige des dégâts AoE, consomme les PM et arme le cooldown", async () => {
+  const { hub, session, sent, persistence } = setup();
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.Connect, pseudo: "Alice" }),
+  );
+  await giveSpell(hub, persistence, session.playerId!, "tornade");
+
+  // Un monstre à la position du joueur (dans le rayon AoE).
+  hub.mobs.spawnPortal(() => 0);
+  const mob = hub.mobs.getMonsters()[0]!;
+  mob.position = { x: 0, y: 0 };
+  const pvBefore = mob.pvActuels;
+
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.CastSpell, spellId: "tornade" }),
+  );
+
+  const state = lastOfType(sent, ServerMessageType.PlayerState);
+  assert.equal(state?.player.pmActuels, 35); // 50 - 15
+  assert.ok((state?.player.cooldownEndTimestamps["tornade"] ?? 0) > 0);
+  assert.ok(
+    (hub.mobs.getMonster(mob.id)?.pvActuels ?? pvBefore) < pvBefore,
+    "le monstre a subi des dégâts",
+  );
+});
+
+test("CAST_SPELL sans PM suffisants renvoie NOT_ENOUGH_MANA", async () => {
+  const { hub, session, sent, persistence } = setup();
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.Connect, pseudo: "Alice" }),
+  );
+  await giveSpell(hub, persistence, session.playerId!, "tornade");
+
+  // On vide les PM du joueur.
+  const player = await persistence.players.get(session.playerId!);
+  player!.pmActuels = 5;
+  await persistence.players.save(player!);
+
+  await hub.handleRaw(
+    session,
+    json({ type: ClientMessageType.CastSpell, spellId: "tornade" }),
+  );
+
+  const error = lastOfType(sent, ServerMessageType.Error);
+  assert.equal(error?.code, ErrorCode.NotEnoughMana);
 });

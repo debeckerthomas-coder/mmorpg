@@ -15,6 +15,7 @@ import {
 
 const DEFAULT_SPAWN: Position = { x: 0, y: 0, zone: "spawn" };
 const DEFAULT_PV_BASE = 100;
+const DEFAULT_PM_BASE = 50;
 
 /**
  * Crée un nouveau joueur avec des valeurs par défaut saines.
@@ -24,15 +25,19 @@ export const createPlayer = (
   overrides: Partial<Omit<Player, "id" | "pseudo">> = {},
 ): Player => {
   const pvBase = overrides.pvBase ?? DEFAULT_PV_BASE;
+  const pmBase = overrides.pmBase ?? DEFAULT_PM_BASE;
   return {
     id: asPlayerId(newId()) as PlayerId,
     pseudo,
     pk: overrides.pk ?? false,
     pvBase,
     pvActuels: overrides.pvActuels ?? pvBase,
+    pmBase,
+    pmActuels: overrides.pmActuels ?? pmBase,
     position: overrides.position ?? { ...DEFAULT_SPAWN },
     equipment: overrides.equipment ?? emptyEquipment(),
     materials: overrides.materials ?? {},
+    cooldownEndTimestamps: overrides.cooldownEndTimestamps ?? {},
   };
 };
 

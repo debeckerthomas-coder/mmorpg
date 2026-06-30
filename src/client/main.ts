@@ -10,6 +10,7 @@ import {
   type PublicMonster,
   type PublicPortal,
   type ServerMessage,
+  type Spell,
   type WeaponView,
   type WorldUpdateMessage,
   MaterialType,
@@ -37,6 +38,7 @@ const loginStatus = el("login-status");
 const gainXpBtn = el<HTMLButtonElement>("gain-xp");
 const infuseClawBtn = el<HTMLButtonElement>("infuse-claw");
 const infuseStoneBtn = el<HTMLButtonElement>("infuse-stone");
+const spellsEl = el("spells");
 const logEl = el("log");
 const canvas = el<HTMLCanvasElement>("map");
 const ctx = canvas.getContext("2d")!;
@@ -73,6 +75,12 @@ let pendingInputs: MoveInput[] = [];
 const heldKeys = new Set<string>();
 let lastFrameTime = 0;
 let loopStarted = false;
+
+// --- Sorts (Brique 10) ---
+/** Sorts utilisables (mappés sur les touches 1/2/3). */
+let usableSpells: Spell[] = [];
+/** Fin de l'effet visuel de sort (timestamp ms). */
+let castEffectUntil = 0;
 
 /** Couleur de rendu d'un portail selon son rang. */
 const RANK_COLOR: Record<PortalRank, string> = {
@@ -203,6 +211,17 @@ const renderHud = (): void => {
   const pct = pvMax > 0 ? Math.max(0, Math.min(100, (me.pvActuels / pvMax) * 100)) : 0;
   el("hp-fill").style.width = `${pct}%`;
 
+  // Barre de PM
+  const pmMax = stats.pmMax;
+  const pm = Math.round(me.pmActuels * 10) / 10;
+  el("pm-text").textContent = `${pm} / ${pmMax}`;
+  const pmPct = pmMax > 0 ? Math.max(0, Math.min(100, (me.pmActuels / pmMax) * 100)) : 0;
+  el("pm-fill").style.width = `${pmPct}%`;
+
+  // Sorts utilisables (mappés sur 1/2/3)
+  usableSpells = stats.usableSpells;
+  renderSpells();
+
   const activeAffixIds = new Set(stats.activeAffixes.map((a) => a.id));
   const activeSpellIds = new Set(stats.usableSpells.map((s) => s.id));
 
@@ -280,6 +299,65 @@ const flashLog = (text: string): void => {
     if (logEl.textContent === text) logEl.textContent = "";
   }, 2500);
 };
+
+// --- Sorts : boutons + cooldowns + lancement ---
+
+const renderSpells = (): void => {
+  if (usableSpells.length === 0) {
+    spellsEl.innerHTML = "Aucun sort actif";
+    return;
+  }
+  spellsEl.innerHTML = usableSpells
+    .map(
+      (sp, i) =>
+        `<button class="spell-btn" data-spell-id="${sp.id}" data-cost="${sp.cost}">
+           <span class="key">${i + 1}</span>${sp.name}<span class="cost">${sp.cost} PM</span>
+           <span class="cd-overlay" hidden></span>
+         </button>`,
+    )
+    .join("");
+};
+
+/** Met à jour les overlays de cooldown et l'état (dés)activé des boutons. */
+const updateSpellCooldowns = (): void => {
+  if (!me) return;
+  const now = Date.now();
+  for (const btn of spellsEl.querySelectorAll<HTMLButtonElement>(".spell-btn")) {
+    const id = btn.dataset["spellId"] ?? "";
+    const cost = Number(btn.dataset["cost"] ?? 0);
+    const overlay = btn.querySelector<HTMLElement>(".cd-overlay");
+    const remaining = (me.cooldownEndTimestamps[id] ?? 0) - now;
+    if (remaining > 0) {
+      if (overlay) {
+        overlay.hidden = false;
+        overlay.textContent = `${(remaining / 1000).toFixed(1)}s`;
+      }
+      btn.disabled = true;
+    } else {
+      if (overlay) overlay.hidden = true;
+      btn.disabled = me.pmActuels < cost;
+    }
+  }
+};
+
+const cast = (spellId: string): void => {
+  send({ type: ClientMessageType.CastSpell, spellId });
+  castEffectUntil = Date.now() + 300; // effet visuel optimiste
+};
+
+spellsEl.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".spell-btn");
+  if (btn && !btn.disabled) cast(btn.dataset["spellId"] ?? "");
+});
+
+window.addEventListener("keydown", (e) => {
+  if (gameScreen.hidden) return;
+  const idx = ["1", "2", "3"].indexOf(e.key);
+  if (idx >= 0) {
+    const sp = usableSpells[idx];
+    if (sp) cast(sp.id);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Rendu de la zone (canvas)
@@ -364,6 +442,23 @@ const renderWorld = (): void => {
   if (me) {
     const self = predicted ?? me.position;
     drawEntity(self.x, self.y, "#7c5cff", me.pseudo, true);
+
+    // Effet de sort : cercle bleu/blanc éphémère (rayon ≈ AoE de 2 cases).
+    const remaining = castEffectUntil - Date.now();
+    if (remaining > 0) {
+      const t = remaining / 300; // 1 → 0
+      ctx.beginPath();
+      ctx.arc(
+        worldToCanvas(self.x),
+        worldToCanvas(self.y),
+        worldToCanvas(2) * (1.2 - t * 0.5),
+        0,
+        Math.PI * 2,
+      );
+      ctx.strokeStyle = `rgba(150, 210, 255, ${t})`;
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
   }
 };
 
@@ -499,6 +594,7 @@ const frame = (now: number): void => {
       send({ type: ClientMessageType.Move, ...input });
     }
     renderWorld();
+    updateSpellCooldowns();
   }
 
   requestAnimationFrame(frame);

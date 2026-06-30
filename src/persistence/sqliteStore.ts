@@ -77,12 +77,15 @@ CREATE TABLE IF NOT EXISTS players (
   pk              INTEGER NOT NULL,       -- 0/1 (booléen)
   pv_base         REAL NOT NULL,
   pv_actuels      REAL NOT NULL,
+  pm_base         REAL NOT NULL DEFAULT 50,   -- Points de Mana (Brique 10)
+  pm_actuels      REAL NOT NULL DEFAULT 50,
   pos_x           REAL NOT NULL,
   pos_y           REAL NOT NULL,
   zone            TEXT NOT NULL,
   slot_principal  TEXT,                   -- FK nullable vers weapons(id)
   slot_secondaire TEXT,
   materials       TEXT NOT NULL DEFAULT '{}', -- JSON: inventaire de matériaux
+  cooldowns       TEXT NOT NULL DEFAULT '{}', -- JSON: cooldowns de sorts (Brique 10)
   FOREIGN KEY (slot_principal)  REFERENCES weapons(id) ON DELETE SET NULL,
   FOREIGN KEY (slot_secondaire) REFERENCES weapons(id) ON DELETE SET NULL
 );
@@ -106,12 +109,18 @@ export const initDatabase = (path: string): Db => {
 
 /** Migrations légères pour les bases créées avant l'ajout d'une colonne. */
 const migrate = (db: Db): void => {
-  const columns = db.prepare("PRAGMA table_info(players)").all() as {
-    name: string;
-  }[];
-  if (!columns.some((c) => c.name === "materials")) {
-    db.exec("ALTER TABLE players ADD COLUMN materials TEXT NOT NULL DEFAULT '{}'");
-  }
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(players)").all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  const addColumn = (name: string, ddl: string): void => {
+    if (!columns.has(name)) db.exec(`ALTER TABLE players ADD COLUMN ${ddl}`);
+  };
+  addColumn("materials", "materials TEXT NOT NULL DEFAULT '{}'");
+  addColumn("pm_base", "pm_base REAL NOT NULL DEFAULT 50");
+  addColumn("pm_actuels", "pm_actuels REAL NOT NULL DEFAULT 50");
+  addColumn("cooldowns", "cooldowns TEXT NOT NULL DEFAULT '{}'");
 };
 
 // ---------------------------------------------------------------------------
@@ -151,12 +160,15 @@ interface PlayerRow {
   pk: number;
   pv_base: number;
   pv_actuels: number;
+  pm_base: number;
+  pm_actuels: number;
   pos_x: number;
   pos_y: number;
   zone: string;
   slot_principal: string | null;
   slot_secondaire: string | null;
   materials: string;
+  cooldowns: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,14 +332,16 @@ export class SqlitePlayerRepository
     this.selectAll = db.prepare("SELECT * FROM players");
     this.upsert = db.prepare(
       `INSERT INTO players
-         (id, pseudo, pk, pv_base, pv_actuels, pos_x, pos_y, zone, slot_principal, slot_secondaire, materials)
+         (id, pseudo, pk, pv_base, pv_actuels, pm_base, pm_actuels, pos_x, pos_y, zone, slot_principal, slot_secondaire, materials, cooldowns)
        VALUES
-         (@id, @pseudo, @pk, @pvBase, @pvActuels, @posX, @posY, @zone, @slotPrincipal, @slotSecondaire, @materials)
+         (@id, @pseudo, @pk, @pvBase, @pvActuels, @pmBase, @pmActuels, @posX, @posY, @zone, @slotPrincipal, @slotSecondaire, @materials, @cooldowns)
        ON CONFLICT(id) DO UPDATE SET
          pseudo = excluded.pseudo, pk = excluded.pk, pv_base = excluded.pv_base,
-         pv_actuels = excluded.pv_actuels, pos_x = excluded.pos_x, pos_y = excluded.pos_y,
+         pv_actuels = excluded.pv_actuels, pm_base = excluded.pm_base,
+         pm_actuels = excluded.pm_actuels, pos_x = excluded.pos_x, pos_y = excluded.pos_y,
          zone = excluded.zone, slot_principal = excluded.slot_principal,
-         slot_secondaire = excluded.slot_secondaire, materials = excluded.materials`,
+         slot_secondaire = excluded.slot_secondaire, materials = excluded.materials,
+         cooldowns = excluded.cooldowns`,
     );
     this.deleteOne = db.prepare("DELETE FROM players WHERE id = ?");
   }
@@ -339,6 +353,8 @@ export class SqlitePlayerRepository
       pk: row.pk !== 0,
       pvBase: row.pv_base,
       pvActuels: row.pv_actuels,
+      pmBase: row.pm_base,
+      pmActuels: row.pm_actuels,
       position: { x: row.pos_x, y: row.pos_y, zone: row.zone },
       equipment: {
         slotPrincipal: row.slot_principal
@@ -349,6 +365,10 @@ export class SqlitePlayerRepository
           : null,
       },
       materials: JSON.parse(row.materials) as Record<string, number>,
+      cooldownEndTimestamps: JSON.parse(row.cooldowns) as Record<
+        string,
+        number
+      >,
     };
   }
 
@@ -368,12 +388,15 @@ export class SqlitePlayerRepository
       pk: player.pk ? 1 : 0,
       pvBase: player.pvBase,
       pvActuels: player.pvActuels,
+      pmBase: player.pmBase,
+      pmActuels: player.pmActuels,
       posX: player.position.x,
       posY: player.position.y,
       zone: player.position.zone,
       slotPrincipal: player.equipment.slotPrincipal,
       slotSecondaire: player.equipment.slotSecondaire,
       materials: JSON.stringify(player.materials),
+      cooldowns: JSON.stringify(player.cooldownEndTimestamps),
     });
   }
 

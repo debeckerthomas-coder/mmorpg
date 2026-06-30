@@ -28,6 +28,7 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | **7. Persistance SQL (SQLite)** | ✅ Fait | `SqlitePersistence` (better-sqlite3), schéma relationnel, jointures affixes/sorts, transactions, défaut serveur, tests round-trip |
 | **8. Déplacements fluides (prédiction réseau)** | ✅ Fait | MOVE par direction + Δt + séquence, validation autoritaire à la vitesse max, prédiction client 60 FPS, `pendingInputs`, réconciliation/rejeu, tests |
 | **9. Matériaux & Infusion (Artisanat)** | ✅ Fait | Loots lâchés par les mobs, ramassage (portée), inventaire joueur, infusion d'arme (50 griffes → affixe, 20 cailloux → sort), persistance, tests |
+| **10. Magie : sorts actifs, PM & cooldowns** | ✅ Fait | PM (base/actuels/max), régénération passive, `CAST_SPELL` (validation PM/cooldown/éligibilité), effet AoE + XP, HUD (barre PM, sorts, cooldowns), tests |
 
 Les 5 briques de base sont en place : modèles de données, persistance, évolution
 d'arme, couche réseau, boucle de simulation **et** client navigateur. Le
@@ -74,10 +75,12 @@ prototype jouable de bout en bout est fonctionnel.
     │   ├── mobs.ts          # MobManager : portails, spawn, IA, loots (B6/B9)
     │   ├── movement.ts      # Déplacement autoritaire (prédiction, Brique 8)
     │   ├── materials.ts     # Loot & infusion : règles pures (Brique 9)
+    │   ├── spells.ts        # Sorts actifs : validation, PM, AoE (Brique 10)
     │   ├── gameloop.test.ts # Tests de la boucle de jeu
     │   ├── combat.test.ts   # Tests IA de suivi + calcul des dégâts
     │   ├── movement.test.ts # Tests validation de vitesse / anti-triche
     │   ├── materials.test.ts# Tests ramassage + infusion
+    │   ├── spells.test.ts   # Tests validation/lancement de sort
     │   └── index.ts         # Démarrage persistance + WebSocket + game loop
     └── client/              # Frontend navigateur (Brique 5, build Vite)
         ├── index.html       # Écran d'accueil + structure du HUD/jeu
@@ -125,7 +128,7 @@ Implémentée dans [`src/models/stats.ts`](src/models/stats.ts) via
 - **Sorts générés** : utilisables **uniquement** si l'arme est dans le
   **Slot_Principal**, *et* si le sort est débloqué par le niveau de l'arme
   (`unlockLevel`) *et* correspond au type de l'arme (`requiredType`).
-- `pvMax = pvBase + pvBonus cumulé`.
+- `pvMax = pvBase + pvBonus cumulé` ; `pmMax = pmBase + pmBonus cumulé` (B10).
 
 Cette règle est couverte par des tests unitaires
 ([`stats.test.ts`](src/models/stats.test.ts)).
@@ -268,7 +271,9 @@ weapons(id PK, name, type, level, current_xp, next_level_xp, raw_stats[JSON])
                       name, required_type, unlock_level, cost, cooldown_ms)
 
 players(id PK, pseudo, pk, pv_base, pv_actuels, pos_x, pos_y, zone,
+        pm_base, pm_actuels,              -- Points de Mana (Brique 10)
         materials[JSON],                  -- inventaire de matériaux (Brique 9)
+        cooldowns[JSON],                  -- cooldowns de sorts (Brique 10)
         slot_principal  FK→weapons ON DELETE SET NULL,
         slot_secondaire FK→weapons ON DELETE SET NULL)
 ```
@@ -337,19 +342,20 @@ WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage
 | `ATTACK_MOB` | `{ mobId: string }` | Attaque un monstre : valide la portée selon l'arme, inflige les dégâts, accorde l'XP **et lâche un loot** si kill, renvoie `PLAYER_STATE` + `WORLD_UPDATE` (Brique 6) | session connectée + arme + mob existant + distance ≤ portée |
 | `PICKUP_LOOT` | `{ lootId: string }` | Ramasse un matériau au sol : ajoute à l'inventaire, retire le loot (Brique 9) | session connectée + loot existant + distance ≤ `LOOT_PICKUP_RANGE` |
 | `INFUSE_WEAPON` | `{ materialType: string }` | Infuse l'arme principale : consomme les matériaux, applique un jet d'affixe/sort (Brique 9) | session connectée + arme + matériaux suffisants |
+| `CAST_SPELL` | `{ spellId, targetMobId? }` | Lance un sort : consomme les PM, arme le cooldown, applique l'effet AoE (dégâts + XP/loot si kill) (Brique 10) | sort de l'arme principale + niveau OK + PM suffisants + hors cooldown |
 
 ### 8.3 États / réponses — Serveur → Client (`ServerMessage`)
 
 | `type` | Charge utile | Quand |
 | --- | --- | --- |
-| `PLAYER_STATE` | `{ player, stats, weapons, lastProcessedSequence }` | Après CONNECT / MOVE / GAIN_XP_DEBUG / ATTACK_MOB / PICKUP_LOOT / INFUSE_WEAPON (le `player` porte aussi `materials`) |
+| `PLAYER_STATE` | `{ player, stats, weapons, lastProcessedSequence }` | Après CONNECT / MOVE / … / CAST_SPELL (le `player` porte `materials`, `pmActuels`, `cooldownEndTimestamps` ; `stats` porte `pmMax`) |
 | `WORLD_UPDATE` | `{ players, portals, monsters, loots }` | Diffusion à tous : joueurs, portails, monstres **et loots au sol** (CONNECT, MOVE, ATTACK_MOB, PICKUP_LOOT, chaque tick d'IA, déconnexion) |
 | `ERROR` | `{ code: ErrorCode, message: string }` | Intention invalide / JSON malformé / état incohérent |
 
 **Codes d'erreur** (`ErrorCode`) : `MALFORMED_JSON`, `UNKNOWN_TYPE`,
 `INVALID_PAYLOAD`, `NOT_CONNECTED`, `INVALID_MOVE`, `NO_WEAPON_EQUIPPED`,
 `MOB_NOT_FOUND`, `OUT_OF_RANGE`, `LOOT_NOT_FOUND`, `NOT_ENOUGH_MATERIALS`,
-`UNKNOWN_MATERIAL`.
+`UNKNOWN_MATERIAL`, `SPELL_NOT_USABLE`, `NOT_ENOUGH_MANA`, `SPELL_ON_COOLDOWN`.
 
 ### 8.4 Tests
 
@@ -395,6 +401,8 @@ fondement d'un serveur autoritaire.
   `pvMax × regenPerSecond × (deltaMs / 1000)` PV, **borné à `pvMax`**.
   `pvMax` provient des **stats agrégées** (règle de la Brique 1).
   Défaut : `regenPerSecond = 5 %/s` (`DEFAULT_REGEN_PER_SECOND`).
+- **Régénération passive des PM** (Brique 10) : même principe, `pmMax × 2 %/s`
+  par défaut (`DEFAULT_PM_REGEN_PER_SECOND`), borné à `pmMax`.
 - **Entités mobiles (`MobileEntity` / `Monster`)** : structure minimale
   (`id`, `name`, `pvActuels`, `pvMax`, `position`) gérée via
   `spawnMonster` / `removeMonster` / `getMonsters`. Inertes pour l'instant
@@ -637,7 +645,61 @@ insuffisantes**). Côté hub, [`gameHub.test.ts`](src/network/gameHub.test.ts)
 couvre les chemins `PICKUP_LOOT` (à portée / hors portée) et `INFUSE_WEAPON`
 (succès / matériaux insuffisants).
 
-## 14. Conventions techniques
+## 14. Magie : Sorts actifs, PM & Cooldowns (Brique 10)
+
+Donne vie aux sorts générés par les armes (Briques 2/9) : ils coûtent des
+**Points de Mana (PM)**, déclenchent un **cooldown** et infligent un effet en
+jeu. Logique pure & testable dans [`spells.ts`](src/server/spells.ts).
+
+### 14.1 Ressource : Points de Mana
+
+- `Player.pmBase` / `pmActuels` ; `pmMax = pmBase + pmBonus` (stats agrégées).
+- **Régénération passive** dans la game loop : `pmMax × 2 %/s`
+  (`DEFAULT_PM_REGEN_PER_SECOND`), en parallèle des PV.
+- Persisté en SQLite (colonnes `pm_base`, `pm_actuels` + migration).
+
+### 14.2 Cooldowns
+
+`Player.cooldownEndTimestamps: Record<spellId, msEpoch>` : pour chaque sort, le
+moment où il redevient lançable. `isSpellOnCooldown(player, spellId, now)`
+compare à `now`. Persisté en JSON (colonne `cooldowns`).
+
+### 14.3 Lancer un sort — `CAST_SPELL { spellId, targetMobId? }`
+
+`castSpell(player, weapon, spell, stats, monsters, now)` (mute `player` en cas
+de succès) valide dans l'ordre :
+1. le sort appartient à l'arme principale et son niveau est débloqué
+   (`SPELL_NOT_USABLE`) ;
+2. `pmActuels ≥ spell.cost` (`NOT_ENOUGH_MANA`) ;
+3. hors cooldown (`SPELL_ON_COOLDOWN`).
+
+Si OK : **consomme** `spell.cost` PM, **arme** le cooldown
+(`now + spell.cooldownMs`), puis renvoie les cibles. **Effet** (ce jalon) :
+AoE autour du lanceur — dégâts = `stat × SPELL_DAMAGE_MULTIPLIER` (3) — Force
+(mêlée) ou Agilité (distance) — à **tous les monstres dans `SPELL_AOE_RADIUS`
+(2 cases)**. Le hub applique les dégâts via le `MobManager` ; un monstre tué
+donne XP à l'arme et lâche un loot (Brique 9).
+
+> Les coûts/cooldowns viennent du `GeneratedSpell` lui-même (`cost`,
+> `cooldownMs`), produits par l'évolution (Brique 2) / l'infusion (Brique 9).
+
+### 14.4 Client
+
+- **Barre de PM** bleue dans le HUD.
+- **Sorts utilisables** (= `stats.usableSpells`) en boutons cliquables, mappés
+  sur les touches **1 / 2 / 3**, avec coût en PM et **overlay de cooldown**
+  (compte à rebours, bouton désactivé tant que PM insuffisants ou en recharge).
+- **Effet visuel** : cercle bleu/blanc éphémère autour du joueur au lancement.
+
+### 14.5 Tests
+
+[`spells.test.ts`](src/server/spells.test.ts) : calcul des dégâts, succès
+(consommation PM + cooldown + sélection AoE), et échecs (**PM insuffisants**,
+**sous cooldown**, sort non équipé, niveau insuffisant). Côté hub,
+[`gameHub.test.ts`](src/network/gameHub.test.ts) couvre `CAST_SPELL` (dégâts +
+PM consommés) et le rejet `NOT_ENOUGH_MANA`.
+
+## 15. Conventions techniques
 
 - **TypeScript strict** (`strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`) — voir [`tsconfig.json`](tsconfig.json).
@@ -648,7 +710,7 @@ couvre les chemins `PICKUP_LOOT` (à portée / hors portée) et `INFUSE_WEAPON`
 - Les **fabriques** (`createPlayer`, `createWeapon`) centralisent les valeurs
   par défaut pour garantir des entités cohérentes.
 
-## 15. Scripts npm
+## 16. Scripts npm
 
 | Script | Action |
 | --- | --- |

@@ -12,6 +12,7 @@ import {
   weaponRange,
 } from "../server/combat.js";
 import { applyMove, type MoveInput } from "../server/movement.js";
+import { castSpell, type SpellErrorCode } from "../server/spells.js";
 import {
   addMaterials,
   infuseWeapon,
@@ -32,6 +33,13 @@ import {
   type PublicPortal,
   type ServerMessage,
 } from "./protocol.js";
+
+/** Traduction des codes d'erreur de sort vers les codes réseau. */
+const SPELL_ERROR_TO_CODE: Record<SpellErrorCode, ErrorCode> = {
+  SPELL_NOT_USABLE: ErrorCode.SpellNotUsable,
+  NOT_ENOUGH_MANA: ErrorCode.NotEnoughMana,
+  SPELL_ON_COOLDOWN: ErrorCode.SpellOnCooldown,
+};
 
 /**
  * Session d'un client connecté au hub.
@@ -140,6 +148,8 @@ export class GameHub {
         return this.onPickupLoot(session, message.lootId);
       case ClientMessageType.InfuseWeapon:
         return this.onInfuseWeapon(session, message.materialType);
+      case ClientMessageType.CastSpell:
+        return this.onCastSpell(session, message.spellId);
     }
   }
 
@@ -353,6 +363,74 @@ export class GameHub {
     await this.persistence.weapons.save(weapon);
     await this.persistence.players.save(player);
     await this.sendPlayerState(session, player);
+  }
+
+  /**
+   * Lance un sort actif (Brique 10). Le serveur valide l'éligibilité (sort de
+   * l'arme principale, niveau, PM, cooldown), consomme les PM, arme le cooldown
+   * et applique l'effet AoE aux monstres proches (dégâts + XP/loot si kill).
+   */
+  private async onCastSpell(session: Session, spellId: string): Promise<void> {
+    const player = await this.requirePlayer(session);
+    if (!player) return;
+
+    const weaponId = player.equipment.slotPrincipal;
+    const weapon = weaponId
+      ? await this.persistence.weapons.get(weaponId)
+      : undefined;
+    if (!weapon) {
+      session.send({
+        type: ServerMessageType.Error,
+        code: ErrorCode.NoWeaponEquipped,
+        message: "Aucune arme équipée pour lancer un sort",
+      });
+      return;
+    }
+
+    const spell = weapon.generatedSpells.find((s) => s.id === spellId);
+    if (!spell) {
+      session.send({
+        type: ServerMessageType.Error,
+        code: ErrorCode.SpellNotUsable,
+        message: "Ce sort n'est pas disponible sur l'arme équipée",
+      });
+      return;
+    }
+
+    const { stats } = await this.aggregate(player);
+    const result = castSpell(
+      player,
+      weapon,
+      spell,
+      stats,
+      this.mobManager.getMonsters(),
+      Date.now(),
+    );
+
+    if (!result.ok) {
+      session.send({
+        type: ServerMessageType.Error,
+        code: SPELL_ERROR_TO_CODE[result.code],
+        message: result.reason,
+      });
+      return;
+    }
+
+    // Applique les dégâts aux monstres touchés ; XP + loot pour les morts.
+    let killed = false;
+    for (const target of result.targets) {
+      const hit = this.mobManager.damageMob(target.id, result.damage);
+      if (hit?.killed) {
+        killed = true;
+        gainXp(weapon, target.xpDonnee);
+        this.mobManager.dropLoot(target.position);
+      }
+    }
+    if (killed) await this.persistence.weapons.save(weapon);
+    await this.persistence.players.save(player);
+
+    await this.sendPlayerState(session, player);
+    await this.broadcastWorld();
   }
 
   // -------------------------------------------------------------------------
