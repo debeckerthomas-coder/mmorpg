@@ -1,0 +1,41 @@
+{
+  "name": "micro-mmorpg",
+  "version": "0.1.0",
+  "description": "Micro-MMORPG persistant sur navigateur — serveur autoritaire (Node.js + TypeScript + WebSockets)",
+  "type": "module",
+  "main": "dist/server/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc --noEmit",
+    "typecheck:client": "tsc -p src/client/tsconfig.json",
+    "dev:client": "vite",
+    "build:client": "vite build",
+    "preview:client": "vite preview",
+    "test": "node --test --import tsx ./src/**/*.test.ts"
+  },
+  "keywords": [
+    "mmorpg",
+    "websocket",
+    "game-server",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

@@ -1,0 +1,318 @@
+:root {
+  --bg: #0e0f1a;
+  --panel: #1a1c2c;
+  --panel-2: #23263a;
+  --accent: #7c5cff;
+  --accent-2: #00d3a7;
+  --text: #e8e8f0;
+  --muted: #9aa0b5;
+  --danger: #ff5470;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.screen {
+  min-height: 100vh;
+  display: flex;
+}
+
+/* --- Login --- */
+#login {
+  align-items: center;
+  justify-content: center;
+}
+
+.login-card {
+  background: var(--panel);
+  padding: 2.5rem 2rem;
+  border-radius: 16px;
+  width: min(360px, 90vw);
+  text-align: center;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.login-card h1 {
+  margin: 0 0 0.25rem;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin-top: 0;
+  font-size: 0.85rem;
+}
+
+#pseudo {
+  width: 100%;
+  padding: 0.7rem 0.9rem;
+  margin: 1rem 0 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--panel-2);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  padding: 0.7rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  transition: filter 0.15s ease;
+}
+
+button:hover {
+  filter: brightness(1.12);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#join {
+  width: 100%;
+}
+
+.status {
+  min-height: 1.2em;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+/* --- Game --- */
+#game {
+  gap: 1rem;
+  padding: 1rem;
+}
+
+#hud {
+  width: 320px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+  height: fit-content;
+}
+
+#hud h2 {
+  margin: 0;
+}
+
+#hud h3 {
+  margin: 1.2rem 0 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  margin-top: 0.25rem;
+}
+
+.badge.pacifist {
+  background: rgba(0, 211, 167, 0.18);
+  color: var(--accent-2);
+}
+
+.badge.pk {
+  background: rgba(255, 84, 112, 0.18);
+  color: var(--danger);
+}
+
+.hp {
+  margin-top: 1rem;
+}
+
+.hp-label {
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+  display: flex;
+  justify-content: space-between;
+}
+
+.hp-bar {
+  height: 18px;
+  background: var(--panel-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.hp-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #ff5470, #ffb347 60%, #00d3a7);
+  transition: width 0.25s ease;
+}
+
+.pm-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2a6df4, #4fd2ff);
+  transition: width 0.25s ease;
+}
+
+.spells {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.spell-btn {
+  position: relative;
+  text-align: left;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+  font-weight: 600;
+  overflow: hidden;
+}
+
+.spell-btn .key {
+  display: inline-block;
+  min-width: 1.2em;
+  text-align: center;
+  background: #11131f;
+  border-radius: 4px;
+  margin-right: 0.4rem;
+  color: var(--accent-2);
+}
+
+.spell-btn .cost {
+  float: right;
+  color: #4fd2ff;
+  font-size: 0.75rem;
+}
+
+.spell-btn .cd-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 20, 0.78);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+}
+
+.slot {
+  background: var(--panel-2);
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+  margin-bottom: 0.5rem;
+}
+
+.slot-title {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.slot-body .weapon-name {
+  font-weight: 700;
+}
+
+.slot-body .lvl {
+  color: var(--accent-2);
+}
+
+.xp-bar {
+  height: 6px;
+  background: #11131f;
+  border-radius: 999px;
+  margin: 0.35rem 0;
+  overflow: hidden;
+}
+
+.xp-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.3rem;
+}
+
+.tag {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 5px;
+  background: rgba(124, 92, 255, 0.18);
+  color: #c9bcff;
+}
+
+.tag.spell {
+  background: rgba(0, 211, 167, 0.16);
+  color: #8af0da;
+}
+
+.tag.inactive {
+  opacity: 0.45;
+}
+
+.stats {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.debug {
+  margin-top: 1.2rem;
+  width: 100%;
+  background: var(--accent-2);
+  color: #08110d;
+}
+
+#stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+#map {
+  background: #0a1411;
+  border-radius: 12px;
+  border: 1px solid #1e2a25;
+  cursor: crosshair;
+  max-width: 100%;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.log {
+  min-height: 1.2em;
+  font-size: 0.85rem;
+  color: var(--danger);
+}

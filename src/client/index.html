@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Le Multivers — Micro-MMORPG</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <!-- Écran d'accueil -->
+    <section id="login" class="screen">
+      <div class="login-card">
+        <h1>⚔️ Le Multivers</h1>
+        <p class="subtitle">Serveur autoritaire · WebSocket :8080</p>
+        <input
+          id="pseudo"
+          type="text"
+          maxlength="20"
+          placeholder="Votre pseudo"
+          autocomplete="off"
+        />
+        <button id="join">Rejoindre le Multivers</button>
+        <p id="login-status" class="status"></p>
+      </div>
+    </section>
+
+    <!-- Interface de jeu -->
+    <section id="game" class="screen" hidden>
+      <aside id="hud">
+        <h2 id="hud-pseudo">—</h2>
+        <div id="hud-pk" class="badge"></div>
+
+        <div class="hp">
+          <div class="hp-label">
+            PV <span id="hp-text">0 / 0</span>
+          </div>
+          <div class="hp-bar"><div id="hp-fill" class="hp-fill"></div></div>
+        </div>
+
+        <div class="hp">
+          <div class="hp-label">
+            PM <span id="pm-text">0 / 0</span>
+          </div>
+          <div class="hp-bar"><div id="pm-fill" class="pm-fill"></div></div>
+        </div>
+
+        <h3>Sorts</h3>
+        <div id="spells" class="spells">Aucun sort actif</div>
+
+        <h3>Équipement</h3>
+        <div id="slot-principal" class="slot">
+          <div class="slot-title">Slot Principal</div>
+          <div class="slot-body">—</div>
+        </div>
+        <div id="slot-secondaire" class="slot">
+          <div class="slot-title">Slot Secondaire</div>
+          <div class="slot-body">—</div>
+        </div>
+
+        <h3>Statistiques agrégées</h3>
+        <div id="agg-stats" class="stats">—</div>
+
+        <h3>Matériaux</h3>
+        <div id="materials" class="stats">—</div>
+        <button id="infuse-claw" class="debug">🦇 Infuser (50 Griffes)</button>
+        <button id="infuse-stone" class="debug">💎 Infuser (20 Cailloux)</button>
+
+        <button id="gain-xp" class="debug">✨ Gagner de l'XP (debug)</button>
+      </aside>
+
+      <main id="stage">
+        <canvas id="map" width="512" height="512"></canvas>
+        <p class="hint">
+          Cliquez sur la carte ou utilisez les flèches / ZQSD pour vous déplacer.
+        </p>
+        <p id="log" class="log"></p>
+      </main>
+    </section>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
