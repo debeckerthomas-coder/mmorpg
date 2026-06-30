@@ -29,7 +29,7 @@ import {
   type MoveMessage,
   type PublicLoot,
   type PublicMonster,
-  type PublicPlayer,
+  type PublicPlayerView,
   type PublicPortal,
   type ServerMessage,
 } from "./protocol.js";
@@ -520,15 +520,19 @@ export class GameHub {
    * la déclencher après chaque tick d'IA.
    */
   async broadcastWorld(): Promise<void> {
-    const players: PublicPlayer[] = [];
+    const players: PublicPlayerView[] = [];
     for (const session of this.sessions.values()) {
       if (!session.playerId) continue;
       const player = await this.persistence.players.get(session.playerId);
       if (player) {
+        const { stats } = await this.aggregate(player);
         players.push({
           id: player.id,
           pseudo: player.pseudo,
           position: player.position,
+          pvActuels: player.pvActuels,
+          pvMax: stats.pvMax,
+          isPk: player.pk,
         });
       }
     }

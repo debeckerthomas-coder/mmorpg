@@ -105,11 +105,18 @@ export const ServerMessageType = {
 export type ServerMessageType =
   (typeof ServerMessageType)[keyof typeof ServerMessageType];
 
-/** Vue publique d'un joueur diffusée aux autres (sans données sensibles). */
-export interface PublicPlayer {
+/**
+ * Vue publique d'un joueur diffusée à tous (sans données sensibles).
+ * Inclut PV et statut PK pour permettre au client d'afficher les autres
+ * joueurs avec leur barre de vie (Brique 11 — multi-joueurs).
+ */
+export interface PublicPlayerView {
   id: string;
   pseudo: string;
   position: Player["position"];
+  pvActuels: number;
+  pvMax: number;
+  isPk: boolean;
 }
 
 /** Armes effectivement équipées dans les deux slots (résolues côté serveur). */
@@ -166,7 +173,7 @@ export interface PublicLoot {
  */
 export interface WorldUpdateMessage {
   type: typeof ServerMessageType.WorldUpdate;
-  players: PublicPlayer[];
+  players: PublicPlayerView[];
   portals: PublicPortal[];
   monsters: PublicMonster[];
   loots: PublicLoot[];

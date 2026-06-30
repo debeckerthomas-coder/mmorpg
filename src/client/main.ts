@@ -9,10 +9,10 @@ import {
   type PublicLoot,
   type PublicMonster,
   type PublicPortal,
+  type PublicPlayerView,
   type ServerMessage,
   type Spell,
   type WeaponView,
-  type WorldUpdateMessage,
   MaterialType,
 } from "./protocol";
 import { applyMove, type MoveInput, type Point } from "./movement";
@@ -49,9 +49,22 @@ let socket: WebSocket | null = null;
 let me: PlayerView | null = null;
 let stats: AggregatedStatsView | null = null;
 let weapons: PlayerStateMessage["weapons"] | null = null;
-let others: WorldUpdateMessage["players"] = [];
 let portals: PublicPortal[] = [];
 let monsters: PublicMonster[] = [];
+
+/** État de rendu d'un autre joueur, avec position interpolée (lerp). */
+interface OtherPlayer {
+  pseudo: string;
+  isPk: boolean;
+  pvActuels: number;
+  pvMax: number;
+  /** Position rendue (interpolée vers `target`). */
+  current: { x: number; y: number };
+  /** Dernière position reçue du serveur. */
+  target: { x: number; y: number };
+}
+/** Carte des autres joueurs connectés (Brique 11). */
+const otherPlayers = new Map<string, OtherPlayer>();
 let loots: PublicLoot[] = [];
 
 /** Couleur de rendu d'un loot selon son matériau. */
@@ -147,7 +160,7 @@ const handleServerMessage = (msg: ServerMessage): void => {
       renderHud();
       break;
     case ServerMessageType.WorldUpdate:
-      others = msg.players;
+      syncOtherPlayers(msg.players);
       portals = msg.portals;
       monsters = msg.monsters;
       loots = msg.loots;
@@ -190,6 +203,50 @@ const enterGame = (): void => {
   if (!gameScreen.hidden) return;
   loginScreen.hidden = true;
   gameScreen.hidden = false;
+};
+
+/** Facteur d'interpolation linéaire des autres joueurs (par frame). */
+const LERP_FACTOR = 0.2;
+
+/**
+ * Met à jour la carte des autres joueurs depuis un WORLD_UPDATE : on conserve
+ * la position courante (pour l'interpolation) et on met à jour la cible ;
+ * les joueurs absents du message (déconnectés) sont retirés.
+ */
+const syncOtherPlayers = (players: PublicPlayerView[]): void => {
+  const seen = new Set<string>();
+  for (const p of players) {
+    if (me && p.id === me.id) continue; // pas soi-même
+    seen.add(p.id);
+    const existing = otherPlayers.get(p.id);
+    if (existing) {
+      existing.pseudo = p.pseudo;
+      existing.isPk = p.isPk;
+      existing.pvActuels = p.pvActuels;
+      existing.pvMax = p.pvMax;
+      existing.target = { x: p.position.x, y: p.position.y };
+    } else {
+      otherPlayers.set(p.id, {
+        pseudo: p.pseudo,
+        isPk: p.isPk,
+        pvActuels: p.pvActuels,
+        pvMax: p.pvMax,
+        current: { x: p.position.x, y: p.position.y },
+        target: { x: p.position.x, y: p.position.y },
+      });
+    }
+  }
+  for (const id of [...otherPlayers.keys()]) {
+    if (!seen.has(id)) otherPlayers.delete(id);
+  }
+};
+
+/** Interpole la position rendue des autres joueurs vers leur dernière cible. */
+const interpolateOthers = (): void => {
+  for (const p of otherPlayers.values()) {
+    p.current.x += (p.target.x - p.current.x) * LERP_FACTOR;
+    p.current.y += (p.target.y - p.current.y) * LERP_FACTOR;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -432,10 +489,10 @@ const renderWorld = (): void => {
     ctx.fillText(`×${loot.amount}`, cx, cy - 9);
   }
 
-  // Autres joueurs
-  for (const p of others) {
-    if (me && p.id === me.id) continue;
-    drawEntity(p.position.x, p.position.y, "#5b6478", p.pseudo);
+  // Autres joueurs (Brique 11) : position interpolée, couleur distincte,
+  // pseudo et mini barre de PV au-dessus.
+  for (const p of otherPlayers.values()) {
+    drawOtherPlayer(p);
   }
 
   // Soi-même : on rend la position PRÉDITE (fluide), pas la dernière reçue.
@@ -460,6 +517,31 @@ const renderWorld = (): void => {
       ctx.stroke();
     }
   }
+};
+
+/** Dessine un autre joueur : carré coloré + pseudo + mini barre de PV. */
+const drawOtherPlayer = (p: OtherPlayer): void => {
+  const cx = worldToCanvas(p.current.x);
+  const cy = worldToCanvas(p.current.y);
+  const size = 16;
+  // Couleur distincte du joueur local (violet) : vert, ou rouge si PK.
+  const color = p.isPk ? "#ff5470" : "#00d3a7";
+  ctx.fillStyle = color;
+  ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+
+  // Mini barre de PV au-dessus.
+  const w = 22;
+  const pct = p.pvMax > 0 ? Math.max(0, Math.min(1, p.pvActuels / p.pvMax)) : 0;
+  ctx.fillStyle = "#11131f";
+  ctx.fillRect(cx - w / 2, cy - size, w, 3);
+  ctx.fillStyle = color;
+  ctx.fillRect(cx - w / 2, cy - size, w * pct, 3);
+
+  // Pseudo.
+  ctx.fillStyle = "#e8e8f0";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(p.pseudo, cx, cy - size - 4);
 };
 
 const drawEntity = (
@@ -593,6 +675,7 @@ const frame = (now: number): void => {
       // 3) On envoie l'intention au serveur autoritaire.
       send({ type: ClientMessageType.Move, ...input });
     }
+    interpolateOthers();
     renderWorld();
     updateSpellCooldowns();
   }

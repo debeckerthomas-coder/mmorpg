@@ -88,6 +88,16 @@ export interface PublicLoot {
   position: { x: number; y: number };
 }
 
+/** Vue publique d'un joueur diffusée à tous (Brique 11). */
+export interface PublicPlayerView {
+  id: string;
+  pseudo: string;
+  position: Position;
+  pvActuels: number;
+  pvMax: number;
+  isPk: boolean;
+}
+
 export interface AggregatedStatsView {
   rawStats: Record<string, number>;
   pvMax: number;
@@ -147,7 +157,7 @@ export interface PlayerStateMessage {
 
 export interface WorldUpdateMessage {
   type: typeof ServerMessageType.WorldUpdate;
-  players: { id: string; pseudo: string; position: Position }[];
+  players: PublicPlayerView[];
   portals: PublicPortal[];
   monsters: PublicMonster[];
   loots: PublicLoot[];

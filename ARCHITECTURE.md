@@ -29,6 +29,7 @@ Micro-MMORPG **persistant** jouable dans le navigateur, reposant sur :
 | **8. Déplacements fluides (prédiction réseau)** | ✅ Fait | MOVE par direction + Δt + séquence, validation autoritaire à la vitesse max, prédiction client 60 FPS, `pendingInputs`, réconciliation/rejeu, tests |
 | **9. Matériaux & Infusion (Artisanat)** | ✅ Fait | Loots lâchés par les mobs, ramassage (portée), inventaire joueur, infusion d'arme (50 griffes → affixe, 20 cailloux → sort), persistance, tests |
 | **10. Magie : sorts actifs, PM & cooldowns** | ✅ Fait | PM (base/actuels/max), régénération passive, `CAST_SPELL` (validation PM/cooldown/éligibilité), effet AoE + XP, HUD (barre PM, sorts, cooldowns), tests |
+| **11. Multi-joueurs (sessions & diffusion globale)** | ✅ Fait | Cycle de vie connexion/déconnexion, `WORLD_UPDATE` enrichi (PV + statut PK de tous), carte `otherPlayers` + interpolation client, rendu distinct, tests 2 sockets |
 
 Les 5 briques de base sont en place : modèles de données, persistance, évolution
 d'arme, couche réseau, boucle de simulation **et** client navigateur. Le
@@ -81,6 +82,7 @@ prototype jouable de bout en bout est fonctionnel.
     │   ├── movement.test.ts # Tests validation de vitesse / anti-triche
     │   ├── materials.test.ts# Tests ramassage + infusion
     │   ├── spells.test.ts   # Tests validation/lancement de sort
+    │   ├── multiplayer.test.ts # Tests multi-joueurs (2 sockets, diffusion)
     │   └── index.ts         # Démarrage persistance + WebSocket + game loop
     └── client/              # Frontend navigateur (Brique 5, build Vite)
         ├── index.html       # Écran d'accueil + structure du HUD/jeu
@@ -349,7 +351,7 @@ WebSocket (ws)  ──raw JSON──▶  parseClientMessage  ──ClientMessage
 | `type` | Charge utile | Quand |
 | --- | --- | --- |
 | `PLAYER_STATE` | `{ player, stats, weapons, lastProcessedSequence }` | Après CONNECT / MOVE / … / CAST_SPELL (le `player` porte `materials`, `pmActuels`, `cooldownEndTimestamps` ; `stats` porte `pmMax`) |
-| `WORLD_UPDATE` | `{ players, portals, monsters, loots }` | Diffusion à tous : joueurs, portails, monstres **et loots au sol** (CONNECT, MOVE, ATTACK_MOB, PICKUP_LOOT, chaque tick d'IA, déconnexion) |
+| `WORLD_UPDATE` | `{ players: PublicPlayerView[], portals, monsters, loots }` | Diffusion globale à **tous** les clients : **tous les joueurs actifs** (id, pseudo, position, `pvActuels`, `pvMax`, `isPk`), portails, monstres, loots — sur CONNECT, MOVE, actions, chaque tick d'IA et **déconnexion** (Brique 11) |
 | `ERROR` | `{ code: ErrorCode, message: string }` | Intention invalide / JSON malformé / état incohérent |
 
 **Codes d'erreur** (`ErrorCode`) : `MALFORMED_JSON`, `UNKNOWN_TYPE`,
@@ -699,7 +701,51 @@ donne XP à l'arme et lâche un loot (Brique 9).
 [`gameHub.test.ts`](src/network/gameHub.test.ts) couvre `CAST_SPELL` (dégâts +
 PM consommés) et le rejet `NOT_ENOUGH_MANA`.
 
-## 15. Conventions techniques
+## 15. Multi-joueurs : sessions & diffusion globale (Brique 11)
+
+Plusieurs clients cohabitent dans le même monde, synchronisés par la diffusion
+`WORLD_UPDATE`.
+
+### 15.1 Cycle de vie d'une session
+
+- **Connexion** : chaque socket → une `Session` (`hub.register`). Le `CONNECT`
+  lie la session à un joueur et déclenche un `WORLD_UPDATE` global.
+- **Déconnexion** : l'évènement `close` de la socket appelle `hub.unregister`,
+  qui **retire la session** du registre puis **diffuse immédiatement** un
+  `WORLD_UPDATE` — les autres clients voient le joueur disparaître. Les monstres
+  qui le ciblaient le « relâchent » au tick suivant (l'IA ne considère que les
+  joueurs connectés via `connectedPlayerIds()`).
+
+### 15.2 Diffusion globale
+
+`broadcastWorld()` construit, pour **tous** les joueurs connectés, une
+`PublicPlayerView` `{ id, pseudo, position, pvActuels, pvMax, isPk }` (le `pvMax`
+vient des stats agrégées), et l'envoie à **toutes** les sessions. Émise sur
+chaque action (connect, move, combat, pickup, cast, déconnexion) et à chaque
+tick d'IA via `onTick`.
+
+### 15.3 Rendu & interpolation client
+
+- Le client maintient une carte `otherPlayers: Map<id, …>`. À chaque
+  `WORLD_UPDATE`, `syncOtherPlayers` met à jour la **cible** de chaque joueur
+  (en conservant la position courante), crée les nouveaux et **supprime ceux
+  absents** du message (déconnectés).
+- Dans la boucle `requestAnimationFrame`, `interpolateOthers` fait un **lerp**
+  (`current += (target − current) × 0.2`) → mouvements fluides entre deux
+  paquets réseau.
+- Chaque autre joueur est dessiné avec une **couleur distincte** (vert, ou
+  rouge si PK — le joueur local est violet), son **pseudo** et une **mini barre
+  de PV** au-dessus.
+
+### 15.4 Tests
+
+[`multiplayer.test.ts`](src/server/multiplayer.test.ts) : au niveau du hub
+(deux sessions = deux sockets simulées) — le déplacement de A apparaît dans le
+`WORLD_UPDATE` reçu par B, présence des PV/statut PK, et **retrait de A à sa
+déconnexion** ; plus un **test d'intégration deux vraies sockets WebSocket**
+(le `MOVE` de A parvient bien à B).
+
+## 16. Conventions techniques
 
 - **TypeScript strict** (`strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes`) — voir [`tsconfig.json`](tsconfig.json).
@@ -710,7 +756,7 @@ PM consommés) et le rejet `NOT_ENOUGH_MANA`.
 - Les **fabriques** (`createPlayer`, `createWeapon`) centralisent les valeurs
   par défaut pour garantir des entités cohérentes.
 
-## 16. Scripts npm
+## 17. Scripts npm
 
 | Script | Action |
 | --- | --- |
